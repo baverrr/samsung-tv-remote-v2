@@ -1,5 +1,7 @@
 # Samsung TV Remote
 
+[![Tests](https://github.com/baverrr/samsung-tv-remote-v2/actions/workflows/tests.yml/badge.svg)](https://github.com/baverrr/samsung-tv-remote-v2/actions/workflows/tests.yml)
+
 A desktop remote control for Samsung Tizen smart TVs (2016 and later), for Linux. It sends remote keys,
 opens apps, turns the TV on and off, casts photos, videos and music from this PC, and mirrors the screen,
 all over the local network. There's a Qt window for everyday use and a command line for scripts.
@@ -44,7 +46,8 @@ Ubuntu 26.04 with KDE Plasma on Wayland.
 
 ## Requirements
 
-- Linux with Python 3 and a desktop session. Only Python 3.14 on KDE Plasma (Wayland) has been tested.
+- Linux with Python 3.10 or newer and a desktop session. The tests run on Python 3.10–3.14 on every push;
+  day-to-day use has only been on Python 3.14 with KDE Plasma (Wayland).
 - Qt for Python (PySide6) from the distribution:
   `sudo apt install python3-pyside6.qtwidgets python3-pyside6.qtsvg`
 - `websocket-client` (installed into a virtual environment below).
