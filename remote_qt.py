@@ -11,6 +11,7 @@ import math
 import os
 import queue
 import socket
+import struct
 import threading
 import time
 import traceback
@@ -305,6 +306,8 @@ def frame(name):
 
 def label(text="", role=None, name=None):
     lab = QLabel(text)
+    # Labels show file names and what the TV reports; never let those render as HTML.
+    lab.setTextFormat(Qt.TextFormat.PlainText)
     if role:
         lab.setProperty("role", role)
     if name:
@@ -1575,6 +1578,13 @@ class CastWindow(QWidget):
         self.cast_paths([u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()])
 
 
+def same_user(conn):
+    """Whether the process at the other end of a unix socket runs as us. Abstract sockets have no file
+    permissions, so any local user could otherwise talk to (or squat on) the instance socket."""
+    creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    return struct.unpack("3i", creds)[1] == os.getuid()
+
+
 def raise_existing(msg):
     """True if a remote is already running (it was sent msg: b'raise' or b'cast')."""
     # Our launch's activation token lets the running window take focus on Wayland.
@@ -1582,6 +1592,8 @@ def raise_existing(msg):
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.connect(INSTANCE_SOCKET)
+            if not same_user(s):
+                raise InstanceError("Another user's program is holding the TV Remote's instance socket.")
             s.sendall(msg + b"\n" + token)
         return True
     except OSError:
@@ -1634,6 +1646,8 @@ def run(cast_window=False):
             except OSError:  # listener shut down: the window has closed
                 return
             with conn:
+                if not same_user(conn):
+                    continue
                 conn.settimeout(1)
                 try:
                     msg = conn.recv(4096)

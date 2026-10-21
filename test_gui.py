@@ -1278,6 +1278,23 @@ def test_launch_racing_another_one_gives_a_clear_error(instance_socket, monkeypa
             rq.claim_instance(b"raise")
 
 
+def test_a_remote_held_by_another_user_is_refused(instance_socket, monkeypatch):
+    running = rq.claim_instance(b"raise")
+    assert running is not None
+    try:
+        someone_else = os.getuid() + 1
+        monkeypatch.setattr(rq.os, "getuid", lambda: someone_else)
+        with pytest.raises(rq.InstanceError, match="Another user"):
+            rq.raise_existing(b"raise")
+    finally:
+        running.close()
+
+
+def test_labels_never_render_html(qtbot):
+    lab = rq.label("<b>x</b>")
+    assert lab.textFormat() == Qt.TextFormat.PlainText
+
+
 def test_a_photo_that_cannot_be_converted_is_skipped(monkeypatch, tmp_path):
     tv = ScriptedTV([])
     c, files, statuses = caster_with(monkeypatch, tv, tmp_path, names=("a.heic", "b.heic", "c.jpg"))
