@@ -29,7 +29,9 @@ import websocket
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "tv-remote" / "config.json"
-DEFAULTS = {"host": "192.0.2.10", "mac": "00:00:5e:00:53:01", "name": "Linux Remote", "token": None, "apps": []}
+# Stand-ins for a TV that isn't set up yet (addresses reserved for documentation: RFC 5737, RFC 7042).
+UNSET_HOST, UNSET_MAC = "192.0.2.10", "00:00:5e:00:53:01"
+DEFAULTS = {"host": UNSET_HOST, "mac": UNSET_MAC, "name": "Linux Remote", "token": None, "apps": []}
 # Known Tizen app IDs. 2021+ firmware ignores the websocket "installed apps" request, so each ID is
 # probed over REST and only the ones the TV reports are shown (with the TV's own name for them).
 CATALOG = [
@@ -79,13 +81,17 @@ def load_config():
     try:
         user = json.loads(CONFIG.read_text())
     except FileNotFoundError:
-        return cfg
+        user = {}
     except json.JSONDecodeError as e:
         raise ConfigError(f"{CONFIG} isn't valid JSON ({e}).\nFix it, or delete it to start over "
                           "(the TV will ask to allow this remote again).") from e
     if not isinstance(user, dict):
         raise ConfigError(f"{CONFIG} must hold a JSON object; fix it or delete it to start over.")
     cfg.update(user)
+    if cfg.get("host") in (None, "", UNSET_HOST):
+        raise ConfigError(f"No TV is set up yet. Put your TV's address in {CONFIG}, e.g.\n"
+                          '{"host": "192.168.1.50", "mac": "aa:bb:cc:dd:ee:ff"}\n'
+                          "(the MAC address is only needed to turn the TV on; see the README's Setup section).")
     return cfg
 
 
@@ -149,7 +155,7 @@ class TV:
             except OSError as e:  # don't leave this socket open with nothing reading it
                 ws.close()
                 raise RuntimeError(f"Paired with the TV, but couldn't save its token to {CONFIG} ({e}); "
-                                   "the TV will ask to allow this remote again") from e
+                                   "after the remote restarts, the TV will ask to allow it again") from e
         ws.settimeout(PING_S)
         old, self.ws = self.ws, ws
         if old is not None:
@@ -264,7 +270,14 @@ class TV:
             raise
 
     def wake(self):
-        mac = bytes.fromhex(self.cfg["mac"].replace(":", ""))
+        text = self.cfg.get("mac") or UNSET_MAC
+        try:
+            mac = bytes.fromhex(text.replace(":", "").replace("-", ""))
+        except (ValueError, AttributeError):
+            mac = b""
+        if text == UNSET_MAC or len(mac) != 6:
+            raise RuntimeError(f'To turn the TV on, put its MAC address in {CONFIG} ("mac": "aa:bb:cc:dd:ee:ff"); '
+                               "your router's list of connected devices shows it")
         packet = b"\xff" * 6 + mac * 16
         broadcast = self.cfg["host"].rsplit(".", 1)[0] + ".255"  # assumes an IPv4 host on a /24 LAN
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:

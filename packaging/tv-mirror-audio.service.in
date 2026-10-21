@@ -4,7 +4,7 @@ After=pipewire-pulse.service
 Wants=pipewire-pulse.service
 
 [Service]
-ExecStart=/usr/bin/python3 -I @APP_DIR@/mirror_audio.py
+ExecStart=/usr/bin/python3 -I "@APP_DIR@/mirror_audio.py"
 Restart=always
 RestartSec=3
 
