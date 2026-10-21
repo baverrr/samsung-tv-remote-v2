@@ -43,15 +43,20 @@ from PySide6.QtGui import (
 )
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QAbstractSlider,
     QApplication,
     QCheckBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMenu,
     QMessageBox,
     QScrollArea,
@@ -68,8 +73,6 @@ import tv_remote as core  # the launcher runs tv_remote.py as __main__; this imp
 
 HERE = Path(__file__).resolve().parent
 INSTANCE_SOCKET = f"\0tv-remote-{os.getuid()}"  # abstract unix socket: one remote window per user
-# Matched as case-insensitive substrings of installed app names; order sets button order.
-FAVORITES = ["Netflix", "Hulu", "Paramount", "Max", "Prime Video", "Disney", "Apple TV", "YouTube"]
 ICONS = HERE / "icons"
 
 # Design tokens: dark, like a physical remote. Text (fg, muted) meets 4.5:1 on every surface; edge and the
@@ -158,6 +161,16 @@ QCheckBox::indicator {
     width: 16px; height: 16px; border-radius: 5px; border: 1px solid @edge; background: @inset;
 }
 QCheckBox::indicator:checked { background: @accent_fill; border-color: @accent_fill; image: url(@check); }
+QListWidget { background: @inset; border: 1px solid @edge; border-radius: 12px; padding: 4px; outline: none; }
+QListWidget::item { padding: 6px 8px; border-radius: 6px; }
+QListWidget::item:hover { background: @hover; }
+QListWidget::item:selected { background: @accent_fill; color: #ffffff; }
+QListWidget::item:disabled { color: @off; }
+QListWidget::indicator {
+    width: 16px; height: 16px; border-radius: 5px; border: 1px solid @edge; background: @inset;
+}
+QListWidget::indicator:checked { background: @accent_fill; border-color: @accent_fill; image: url(@check); }
+QListWidget::indicator:checked:selected { border-color: #ffffff; }
 QMessageBox { background: @body; }
 
 /* Keyboard focus last, so it wins over every tone: a 2 px white ring (padding shrinks by 1 px to keep
@@ -168,6 +181,7 @@ QFrame#rocker QToolButton:focus { border: 2px solid @focus; }
 QLineEdit:focus { border: 2px solid @focus; padding: 7px 9px; }
 QSpinBox:focus { border: 2px solid @focus; padding: 2px 5px; }
 QCheckBox::indicator:focus { border: 2px solid @focus; }
+QListWidget:focus { border: 2px solid @focus; padding: 3px; }
 QSlider::handle:horizontal:focus { background: @accent_fill; border: 2px solid @focus; }
 /* The ring keys are invisible buttons; DPad paints their states and focus ring. After the focus rules,
    so a focused ring key doesn't get the square border (clipped by its mask into stray white marks). */
@@ -281,16 +295,6 @@ def button(text="", icon_name=None, tip=None, tone=None, round=None, min_size=No
 def fmt_clock(seconds):
     s = int(seconds)
     return f"{s // 3600}:{s % 3600 // 60:02}:{s % 60:02}" if s >= 3600 else f"{s // 60}:{s % 60:02}"
-
-
-def favorite_apps(apps):
-    picked = []
-    for fav in FAVORITES:
-        for app in apps:
-            if fav.lower() in app["name"].lower() and app not in picked:
-                picked.append(app)
-                break
-    return picked
 
 
 def frame(name):
@@ -603,6 +607,8 @@ class RemoteWindow(QWidget):
             threading.Thread(target=self._worker, args=(q, error_event), daemon=True).start()
         self.caster = None
         self.cast_window = None
+        self.apps_dialog = None
+        self.favorite_popup = None
         self.key_buttons = {}
 
         body = frame("body")
@@ -750,17 +756,23 @@ class RemoteWindow(QWidget):
             if w:
                 w.deleteLater()
         apps = self.cfg["apps"]
-        favs = favorite_apps(apps)
-        for i, app in enumerate(favs):
-            b = button(app["name"], tip=f"Open {app['name']} on the TV", min_size=(0, 36), expand=True,
-                       on_click=lambda _=False, a=app: self.launch(a))
+        favs = [(k, a) for k in self.cfg["favorites"] if (a := core.installed_app(self.cfg, k))]
+        for i, (key, app) in enumerate(favs):
+            b = button(app["name"], tip=f"Open {app['name']} on the TV (right-click to move or remove it)",
+                       min_size=(0, 36), expand=True, on_click=lambda _=False, a=app: self.launch(a))
+            b.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            b.customContextMenuRequested.connect(lambda pos, k=key, b=b: self.favorite_menu(k, b, pos))
             self.apps_grid.addWidget(b, i // 3, i % 3)
         self.apps_note = None if apps else note
-        more = button("All apps" if apps else note or "Loading…", "layout-grid", tip="Every installed app",
+        more = button("All apps" if apps else note or "Loading…", "layout-grid", tip="More apps, and Edit apps…",
                       tone="outline", icon_size=16, min_size=(0, 36), expand=True)
         menu = QMenu(more)
-        for a in sorted((a for a in apps if a not in favs), key=lambda a: a["name"].lower()):
+        others = (core.installed_app(self.cfg, k) for k in self.cfg["menu_apps"])
+        for a in sorted((a for a in others if a), key=lambda a: a["name"].lower()):
             menu.addAction(a["name"], lambda a=a: self.launch(a))
+        if not menu.isEmpty():
+            menu.addSeparator()
+        menu.addAction("Edit apps…", self.edit_apps)
         more.setMenu(menu)
         more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         more.setEnabled(bool(apps))
@@ -768,6 +780,76 @@ class RemoteWindow(QWidget):
         self.apps_grid.addWidget(more, n // 3, n % 3, 1, 3 - n % 3)  # fills the rest of the last row
         for col in range(3):
             self.apps_grid.setColumnStretch(col, 1)
+
+    def favorite_menu(self, key, b, pos):
+        """Right-click (or the Menu key) on an app button: move it among the visible buttons, or remove it."""
+        shown = [k for k in self.cfg["favorites"] if core.installed_app(self.cfg, k)]
+        i = shown.index(key)
+        menu = QMenu(b)
+        left = menu.addAction("Move left", lambda: self.move_favorite(key, shown[i - 1]))
+        right = menu.addAction("Move right", lambda: self.move_favorite(key, shown[(i + 1) % len(shown)]))
+        left.setEnabled(i > 0)
+        right.setEnabled(i < len(shown) - 1)
+        menu.addAction("Remove from remote (keep in All apps)", lambda: self.unfavorite(key))
+        menu.addSeparator()
+        menu.addAction("Edit apps…", self.edit_apps)
+        menu.popup(b.mapToGlobal(pos))
+        self.favorite_popup = menu  # for tests
+
+    def move_favorite(self, key, other):
+        favs = list(self.cfg["favorites"])
+        i, j = favs.index(key), favs.index(other)
+        favs[i], favs[j] = favs[j], favs[i]
+        self.save_apps(favs, self.cfg["menu_apps"])
+
+    def unfavorite(self, key):
+        self.save_apps([k for k in self.cfg["favorites"] if k != key], [key, *self.cfg["menu_apps"]])
+
+    def save_apps(self, favorites, menu, custom=None, found=()):
+        """New app lists (and apps added by ID, with what the TV said about them) into the config, then the
+        buttons are rebuilt."""
+        if custom is not None:
+            self.cfg["custom_apps"] = custom
+        self.cfg["apps"] = self.cfg["apps"] + [a for a in found if a not in self.cfg["apps"]]
+        self.cfg["favorites"], self.cfg["menu_apps"] = list(favorites), list(menu)
+        core.clean_app_lists(self.cfg)
+        try:
+            core.save_config(self.cfg)
+        except OSError as e:
+            self.set_status(f"Couldn't save the app list: {core.describe_error(e)}", "danger")
+        self.build_apps(self.apps_note)
+
+    def edit_apps(self):
+        if self.apps_dialog is None:
+            self.apps_dialog = AppsDialog(self)
+            self.apps_dialog.finished.connect(self._apps_dialog_closed)
+            self.check_apps()
+        bring_forward(self.apps_dialog)
+
+    def _apps_dialog_closed(self):
+        self.apps_dialog = None
+
+    def check_apps(self):
+        """Ask the TV which apps it has now; the Edit apps window shows the answer."""
+        def go():
+            ok = False
+            try:
+                self.post("apps", self.tv.scan_apps())
+                ok = not self.tv.apps_from_cache
+            finally:
+                self.post("apps_checked", ok)
+        self.run(go, "Couldn't check the apps")
+
+    def probe_app(self, app_id):
+        """Ask the TV about one app ID (Edit apps › Advanced); the answer, or why there's none, comes
+        back as an app_probe event."""
+        def go():
+            try:
+                result = self.tv.probe_app(app_id)
+            except (OSError, ValueError, KeyError, TypeError) as e:
+                result = core.describe_error(e)
+            self.post("app_probe", (app_id, result))
+        self.run(go)
 
     # -- actions
 
@@ -906,6 +988,12 @@ class RemoteWindow(QWidget):
                 self.build_apps(APPS_WHEN_ON)
         elif event == "apps":
             self.build_apps(None if data else "No apps found")
+        elif event == "apps_checked":
+            if self.apps_dialog:
+                self.apps_dialog.checked_tv(data)
+        elif event == "app_probe":
+            if self.apps_dialog and self.apps_dialog.add_dialog:
+                self.apps_dialog.add_dialog.probe_done(*data)
         elif event == "status":
             self.set_status(data)
         elif event == "error":
@@ -975,7 +1063,309 @@ class RemoteWindow(QWidget):
     def closeEvent(self, e):
         if self.cast_window:
             self.cast_window.close()
+        if self.apps_dialog:
+            self.apps_dialog.reject()
         super().closeEvent(e)
+
+
+KEY_ROLE = Qt.ItemDataRole.UserRole  # list items keep their app key here
+INSTALLED = "Installed"
+# What the Edit apps windows say about an app the TV doesn't list, by how the last check went.
+NOT_INSTALLED = {None: "Checking the TV…", True: "Not on this TV", False: "Couldn't check (is the TV on?)"}
+
+
+def dialog_body(dialog, title, intro, width):
+    """A dialog styled like the remote's windows: title, wrapped intro, then whatever the caller adds."""
+    dialog.setObjectName("window")
+    dialog.setWindowTitle(title)
+    body = frame("body")
+    v = QVBoxLayout(body)
+    v.setContentsMargins(px(22), px(22), px(22), px(18))
+    v.setSpacing(px(12))
+    v.addWidget(label(title, name="title"))
+    text = label(intro, "muted")
+    text.setWordWrap(True)
+    v.addWidget(text)
+    body.setFixedWidth(px(width))
+    outer = QVBoxLayout(dialog)
+    outer.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)  # grows when Advanced opens
+    outer.setContentsMargins(px(10), px(10), px(10), px(10))
+    outer.addWidget(body)
+    return v
+
+
+def app_list(name, min_rows):
+    lst = QListWidget()
+    lst.setAccessibleName(name)
+    lst.setMinimumHeight(px(34) * min_rows)
+    return lst
+
+
+class AppsDialog(QDialog):
+    """Edit apps: the remote's app buttons (up to MAX_FAVORITES ticked apps, in list order) and what's in All
+    apps (the rest). Works on a copy; Save writes it to the config and rebuilds the remote's buttons."""
+
+    def __init__(self, remote):
+        super().__init__(remote)
+        self.remote = remote
+        self.setModal(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.custom = [dict(a) for a in remote.cfg["custom_apps"]]
+        self.found = []  # apps the TV confirmed while adding by ID, not yet in cfg["apps"]
+        self.checked = None  # how the TV check started on opening went: None = still asking, then ok or not
+        self.add_dialog = None
+        v = dialog_body(self, "Edit apps", f"Tick up to {core.MAX_FAVORITES} apps for the remote's buttons; they "
+                        "appear in this order. The rest are in All apps. Apps that aren't on the TV stay hidden "
+                        "on the remote until they are.", 380)
+        self.list = app_list("Your apps", 9)
+        self.list.itemChanged.connect(self.item_changed)
+        self.list.currentRowChanged.connect(self.update_buttons)
+        v.addWidget(self.list)
+        self.note = label("", "caption")
+        self.note.setWordWrap(True)
+        v.addWidget(self.note)
+        self.up = button(icon_name="chevron-up", tip="Move the selected app up", tone="outline", round=36,
+                         on_click=lambda: self.move_selected(-1))
+        self.down = button(icon_name="chevron-down", tip="Move the selected app down", tone="outline", round=36,
+                           on_click=lambda: self.move_selected(1))
+        self.remove = button("Remove", tip="Take the selected app off the remote and out of All apps",
+                             tone="outline", on_click=self.remove_selected)
+        add = button("Add apps…", "plus", tip="Add popular apps, or an app by its ID", tone="outline", icon_size=16,
+                     on_click=self.open_add)
+        v.addLayout(hbox(self.up, self.down, self.remove, None, add))
+        reset = button("Reset to defaults", tip="The default apps, and no apps added by ID", tone="ghost",
+                       on_click=self.reset)
+        cancel = button("Cancel", tone="outline", on_click=self.reject)
+        save = button("Save", tone="accent", on_click=self.save)
+        v.addLayout(hbox(reset, None, cancel, save))
+        self.fill(remote.cfg["favorites"], remote.cfg["menu_apps"])
+
+    def view_cfg(self):
+        """The config as this window has it: the TV's app list plus apps confirmed here, and its custom apps."""
+        return {"apps": self.remote.cfg["apps"] + self.found, "custom_apps": self.custom}
+
+    def status(self, key):
+        return INSTALLED if core.installed_app(self.view_cfg(), key) else NOT_INSTALLED[self.checked]
+
+    def app_keys(self):
+        return [self.list.item(i).data(KEY_ROLE) for i in range(self.list.count())]
+
+    def ticked(self):
+        return [self.list.item(i).data(KEY_ROLE) for i in range(self.list.count())
+                if self.list.item(i).checkState() == Qt.CheckState.Checked]
+
+    def fill(self, favorites, menu):
+        self.list.clear()
+        self.add_keys(favorites, ticked=True)
+        self.add_keys(menu)
+        self.list.setCurrentRow(0)
+        self.update_buttons()
+
+    def add_keys(self, keys, ticked=False):
+        self.list.blockSignals(True)
+        for key in keys:
+            item = QListWidgetItem()
+            item.setData(KEY_ROLE, key)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if ticked else Qt.CheckState.Unchecked)
+            self.list.addItem(item)
+            self.label_item(item)
+        self.list.blockSignals(False)
+
+    def label_item(self, item):
+        key = item.data(KEY_ROLE)
+        cfg = self.view_cfg()
+        status = self.status(key)
+        item.setText(f"{core.app_name(cfg, key)}  ·  {status}")
+        item.setToolTip("App ID: " + ", ".join(core.app_ids(key)))
+        item.setForeground(QColor(T["fg"] if status == INSTALLED else T["muted"]))
+
+    def refresh(self):
+        self.list.blockSignals(True)
+        for i in range(self.list.count()):
+            self.label_item(self.list.item(i))
+        self.list.blockSignals(False)
+        if self.add_dialog:
+            self.add_dialog.refresh()
+
+    def checked_tv(self, ok):
+        self.checked = ok
+        self.refresh()
+
+    def item_changed(self, item):
+        if item.checkState() == Qt.CheckState.Checked and len(self.ticked()) > core.MAX_FAVORITES:
+            self.list.blockSignals(True)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            self.list.blockSignals(False)
+            self.note.setText(f"Only {core.MAX_FAVORITES} apps fit on the remote; untick one first.")
+        else:
+            self.note.setText("")
+
+    def update_buttons(self, *_):
+        row = self.list.currentRow()
+        self.up.setEnabled(row > 0)
+        self.down.setEnabled(0 <= row < self.list.count() - 1)
+        self.remove.setEnabled(row >= 0)
+
+    def move_selected(self, step):
+        row = self.list.currentRow()
+        if not 0 <= row + step < self.list.count():
+            return
+        self.list.blockSignals(True)
+        item = self.list.takeItem(row)
+        self.list.insertItem(row + step, item)
+        self.list.blockSignals(False)
+        self.list.setCurrentRow(row + step)
+
+    def remove_selected(self):
+        row = self.list.currentRow()
+        if row < 0:
+            return
+        key = self.list.takeItem(row).data(KEY_ROLE)
+        self.note.setText(f"Removed {core.app_name(self.view_cfg(), key)}.")
+        self.custom = [a for a in self.custom if core.CUSTOM + a["appId"] != key]
+        self.list.setCurrentRow(min(row, self.list.count() - 1))
+        self.update_buttons()
+
+    def reset(self):
+        self.custom = []
+        self.fill(core.DEFAULT_FAVORITES, core.DEFAULT_MENU)
+        self.note.setText("Back to the default apps. Save to keep them.")
+
+    def open_add(self):
+        if self.add_dialog is None:
+            self.add_dialog = AddAppDialog(self)
+            self.add_dialog.finished.connect(self._add_dialog_closed)
+        bring_forward(self.add_dialog)
+
+    def _add_dialog_closed(self):
+        self.add_dialog = None
+
+    def add_app(self, key, found=None):
+        """Append an app (unticked, so it goes in All apps); found is the TV's answer for an app added by ID."""
+        if found:
+            self.found.append(found)
+            if key.startswith(core.CUSTOM):
+                self.custom.append(found)
+        self.add_keys([key])
+        self.list.setCurrentRow(self.list.count() - 1)
+        self.update_buttons()
+
+    def save(self):
+        ticked = self.ticked()
+        self.remote.save_apps(ticked, [k for k in self.app_keys() if k not in ticked], self.custom, self.found)
+        self.accept()
+
+
+class AddAppDialog(QDialog):
+    """Add apps: popular apps with publicly known IDs, each checked on the TV (only installed ones can be
+    added), and under Advanced, any app by its ID, which the TV must confirm."""
+
+    def __init__(self, apps_dialog):
+        super().__init__(apps_dialog)
+        self.apps = apps_dialog
+        self.setModal(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.pending = None  # the ID being asked about
+        v = dialog_body(self, "Add apps", "Popular apps with publicly known IDs. Each is checked on your TV, and "
+                        "only the ones it has can be added.", 360)
+        self.list = app_list("Popular apps", 8)
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.list.itemSelectionChanged.connect(self.update_add)
+        self.list.itemDoubleClicked.connect(lambda _: self.add_selected())
+        v.addWidget(self.list)
+
+        self.advanced = QCheckBox("Advanced: add an app by its ID")
+        self.advanced.setToolTip("For apps not listed above: the TV is asked whether it has the app with this ID")
+        v.addWidget(self.advanced)
+        self.id_box = QWidget()
+        box = QVBoxLayout(self.id_box)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(px(6))
+        hint = label("Tizen app IDs are mostly 13 digits, e.g. 3201907018807. Community lists (search “Samsung "
+                     "Tizen app IDs”) have many more; an app can have a different ID on older TVs, so the TV "
+                     "is asked first.", "caption")
+        hint.setWordWrap(True)
+        box.addWidget(hint)
+        self.id_entry = QLineEdit()
+        self.id_entry.setPlaceholderText("App ID")
+        self.id_entry.setAccessibleName("App ID")
+        self.id_entry.returnPressed.connect(self.check_id)
+        self.check = button("Check on TV", tone="outline", on_click=self.check_id)
+        box.addLayout(hbox(self.id_entry, self.check))
+        self.id_note = label("", "caption")
+        self.id_note.setWordWrap(True)
+        box.addWidget(self.id_note)
+        self.id_box.setVisible(False)
+        self.advanced.toggled.connect(self.id_box.setVisible)
+        v.addWidget(self.id_box)
+
+        cancel = button("Close", tone="outline", on_click=self.reject)
+        self.add = button("Add", tone="accent", tip="Add the selected apps to All apps", on_click=self.add_selected)
+        v.addLayout(hbox(None, cancel, self.add))
+        self.refresh()
+
+    def refresh(self):
+        """List the catalog apps not added yet, with what the TV said about each; keeps the selection."""
+        selected = {i.data(KEY_ROLE) for i in self.list.selectedItems()}
+        self.list.clear()
+        added = set(self.apps.app_keys())
+        cfg = self.apps.view_cfg()
+        # Installed apps first: they're the ones that can be added.
+        for app in sorted(core.CATALOG, key=lambda a: self.apps.status(a["key"]) != INSTALLED):
+            if app["key"] in added:
+                continue
+            status = self.apps.status(app["key"])
+            item = QListWidgetItem(f"{core.app_name(cfg, app['key'])}  ·  {status}")
+            item.setData(KEY_ROLE, app["key"])
+            item.setToolTip("App ID: " + ", ".join(app["ids"]))
+            if status != INSTALLED:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled & ~Qt.ItemFlag.ItemIsSelectable)
+            self.list.addItem(item)
+            item.setSelected(app["key"] in selected and status == INSTALLED)
+        self.update_add()
+
+    def update_add(self):
+        self.add.setEnabled(bool(self.list.selectedItems()))
+
+    def add_selected(self):
+        keys = [i.data(KEY_ROLE) for i in self.list.selectedItems()]
+        for key in keys:
+            self.apps.add_app(key)
+        if keys:
+            self.apps.note.setText(f"Added {len(keys)} app{'s' if len(keys) > 1 else ''} to All apps. "
+                                   "Tick one to put it on the remote.")
+            self.accept()
+
+    def check_id(self):
+        app_id = self.id_entry.text().strip()
+        if not core.APP_ID_RE.fullmatch(app_id):
+            self.id_note.setText("That isn't an app ID: use letters, digits, dots, dashes or underscores.")
+            return
+        key = core.key_for_id(app_id)
+        if key in self.apps.app_keys():
+            self.id_note.setText(f"{core.app_name(self.apps.view_cfg(), key)} is already in your apps.")
+            return
+        self.pending = app_id
+        self.check.setEnabled(False)
+        self.id_note.setText(f"Asking the TV about {app_id}…")
+        self.apps.remote.probe_app(app_id)
+
+    def probe_done(self, app_id, result):
+        if app_id != self.pending:
+            return  # an answer to an ID asked about earlier
+        self.pending = None
+        self.check.setEnabled(True)
+        if isinstance(result, dict):
+            key = core.key_for_id(app_id)
+            self.apps.add_app(key, result)
+            self.id_note.setText(f"Added {result['name']} to All apps.")
+            self.id_entry.clear()
+            self.refresh()
+        elif result is None:
+            self.id_note.setText(f"The TV doesn't have an app with the ID {app_id}.")
+        else:
+            self.id_note.setText(f"Couldn't ask the TV: {result}")
 
 
 class CastWindow(QWidget):

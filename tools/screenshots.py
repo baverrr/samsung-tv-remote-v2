@@ -1,4 +1,4 @@
-"""Re-render docs/remote.png and docs/cast.png offscreen, with the TV stubbed out (nothing is sent).
+"""Re-render docs/remote.png, docs/cast.png and docs/apps.png offscreen, with the TV stubbed out (nothing is sent).
 
 Run with the app's venv:  venv/bin/python -I tools/screenshots.py
 The status line shows a documentation address (192.0.2.20), never a real TV's.
@@ -58,11 +58,18 @@ def main():
     def finish():
         assert window.cast_window is not None
         save(window.cast_window.grab(), docs / "cast.png")
+        window.cast_window.close()
+        window.edit_apps()
+        QTimer.singleShot(500, apps)
+
+    def apps():
+        assert window.apps_dialog is not None
+        save(window.apps_dialog.grab(), docs / "apps.png")
         app.quit()
 
     QTimer.singleShot(1500, shoot)  # let startup post "Connected" and build the app buttons
     app.exec()
-    print(f"wrote {docs / 'remote.png'} and {docs / 'cast.png'}")
+    print(f"wrote remote.png, cast.png and apps.png in {docs}")
 
 
 if __name__ == "__main__":

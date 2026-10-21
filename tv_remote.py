@@ -10,6 +10,7 @@ CLI:  tv-remote key KEY_VOLUP [KEY_MUTE ...] | apps | launch <name> | text <stri
 import base64
 import json
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -32,24 +33,51 @@ CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "tv-
 # Stand-ins for a TV that isn't set up yet (addresses reserved for documentation: RFC 5737, RFC 7042).
 UNSET_HOST, UNSET_MAC = "192.0.2.10", "00:00:5e:00:53:01"
 DEFAULTS = {"host": UNSET_HOST, "mac": UNSET_MAC, "name": "Linux Remote", "token": None, "apps": []}
-# Known Tizen app IDs. 2021+ firmware ignores the websocket "installed apps" request, so each ID is
-# probed over REST and only the ones the TV reports are shown (with the TV's own name for them).
+# Popular apps and their publicly reported Tizen app IDs (community lists; Samsung publishes none). Some
+# apps were given a new ID for 2020+ TVs, so every known ID is listed. 2021+ firmware ignores the websocket
+# "installed apps" request, so each ID is probed over REST: only IDs the TV reports count as installed, and
+# the TV's own name is shown. An app is identified by its key here, so it works with whichever ID a TV has.
 CATALOG = [
-    "3201907018807", "11101200001",                     # Netflix
-    "3201601007625",                                    # Hulu
-    "3201710014981", "3202110025305",                   # Paramount+
-    "3202301029760",                                    # HBO Max
-    "3201910019365", "3201512006785",                   # Prime Video
-    "3201901017640", "3202009021709", "3202204027038",  # Disney+
-    "3201807016597",                                    # Apple TV
-    "111299001912", "3201707014489",                    # YouTube, YouTube TV
-    "3202006020991", "3201707014448", "3201504001965",  # Peacock, Sling, Tubi
-    "3201808016802", "3201512006963", "3202302030097",  # Pluto, Plex, Crunchyroll
-    "3201803015944", "3202006021105", "3201803015836",  # Discovery+, Xfinity Stream (which is which: unverified)
-    "3201606009684", "3201908019041", "3201710014874",  # Spotify, Apple Music, Amazon Music
-    "3202203026841", "3202203026799", "3202102023078",  # Twitch, Xbox, GeForce NOW
-    "3202008021577", "111012010001", "3202010022079",   # TikTok, Vudu, Browser
+    {"key": "netflix", "name": "Netflix", "ids": ["3201907018807", "11101200001"]},
+    {"key": "youtube", "name": "YouTube", "ids": ["111299001912"]},
+    {"key": "prime", "name": "Prime Video", "ids": ["3201910019365", "3201512006785"]},
+    {"key": "disney", "name": "Disney+", "ids": ["3201901017640", "3202009021709", "3202204027038"]},
+    {"key": "hulu", "name": "Hulu", "ids": ["3201601007625"]},
+    {"key": "max", "name": "HBO Max", "ids": ["3202301029760", "3201601007230"]},
+    {"key": "paramount", "name": "Paramount+", "ids": ["3201710014981", "3202110025305"]},
+    {"key": "appletv", "name": "Apple TV", "ids": ["3201807016597"]},
+    {"key": "peacock", "name": "Peacock", "ids": ["3202006020991"]},
+    {"key": "youtubetv", "name": "YouTube TV", "ids": ["3201707014489"]},
+    {"key": "tubi", "name": "Tubi", "ids": ["3201504001965"]},
+    {"key": "pluto", "name": "Pluto TV", "ids": ["3201808016802"]},
+    {"key": "tvplus", "name": "Samsung TV Plus", "ids": ["3202405035480"]},
+    {"key": "spotify", "name": "Spotify", "ids": ["3201606009684"]},
+    {"key": "sling", "name": "Sling TV", "ids": ["3201707014448"]},
+    {"key": "plex", "name": "Plex", "ids": ["3201512006963"]},
+    {"key": "crunchyroll", "name": "Crunchyroll", "ids": ["3202302030097"]},
+    {"key": "espn", "name": "ESPN", "ids": ["3201708014618"]},
+    {"key": "twitch", "name": "Twitch", "ids": ["3202203026841"]},
+    {"key": "browser", "name": "Internet", "ids": ["3202010022079", "3201907018784"]},
+    {"key": "youtubekids", "name": "YouTube Kids", "ids": ["3201611010983"]},
+    {"key": "discovery", "name": "Discovery+", "ids": ["3201803015944"]},
+    {"key": "xfinity", "name": "Xfinity Stream", "ids": ["3202006021105", "3201803015836"]},  # unverified
+    {"key": "applemusic", "name": "Apple Music", "ids": ["3201908019041"]},
+    {"key": "amazonmusic", "name": "Amazon Music", "ids": ["3201710014874"]},
+    {"key": "siriusxm", "name": "SiriusXM", "ids": ["111399002220"]},
+    {"key": "tiktok", "name": "TikTok", "ids": ["3202008021577"]},
+    {"key": "xbox", "name": "Xbox", "ids": ["3202203026799"]},
+    {"key": "geforcenow", "name": "GeForce NOW", "ids": ["3202102023078"]},
+    {"key": "vudu", "name": "Fandango at Home (Vudu)", "ids": ["111012010001"]},
+    {"key": "amc", "name": "AMC", "ids": ["3201811017337"]},
+    {"key": "mlb", "name": "MLB", "ids": ["3201603008210"]},
 ]
+CATALOG_BY_KEY = {app["key"]: app for app in CATALOG}
+MAX_FAVORITES = 5  # app buttons on the remote; the rest are in All apps
+DEFAULT_FAVORITES = ["netflix", "youtube", "prime", "disney", "hulu"]
+DEFAULT_MENU = ["max", "paramount", "appletv", "peacock", "youtubetv", "tubi", "pluto", "tvplus", "spotify",
+                "sling", "plex", "crunchyroll", "espn", "twitch", "browser"]
+CUSTOM = "id:"  # key prefix of an app added by its ID (Advanced), e.g. "id:3201234567890"
+APP_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")  # goes into a URL path, so nothing else
 
 
 class ConfigError(Exception):
@@ -92,17 +120,78 @@ def load_config():
         raise ConfigError(f"No TV is set up yet. Put your TV's address in {CONFIG}, e.g.\n"
                           '{"host": "192.168.1.50", "mac": "aa:bb:cc:dd:ee:ff"}\n'
                           "(the MAC address is only needed to turn the TV on; see the README's Setup section).")
+    clean_app_lists(cfg)
     return cfg
 
 
+_save_lock = threading.Lock()  # the GUI saves app lists while a worker thread may save a scan
+
+
 def save_config(cfg):
-    CONFIG.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    tmp = CONFIG.with_suffix(".tmp")
-    tmp.unlink(missing_ok=True)  # a leftover could have looser permissions; O_CREAT keeps those
-    # Created 0600, so the pairing token is never readable by others, not even until a chmod.
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
-        f.write(json.dumps(cfg, indent=2))
-    tmp.replace(CONFIG)
+    with _save_lock:
+        CONFIG.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tmp = CONFIG.with_suffix(".tmp")
+        tmp.unlink(missing_ok=True)  # a leftover could have looser permissions; O_CREAT keeps those
+        # Created 0600, so the pairing token is never readable by others, not even until a chmod.
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
+            f.write(json.dumps(cfg, indent=2))
+        tmp.replace(CONFIG)
+
+
+# -- which apps the remote shows: "favorites" (its buttons, in order) and "menu_apps" (All apps) hold app
+# keys: a CATALOG key, or CUSTOM + an app ID for apps added by ID, whose TV names are in "custom_apps".
+
+def clean_app_lists(cfg):
+    """Make the app lists usable whatever the config file holds: wrong types and unknown keys are dropped,
+    duplicates removed, favorites capped at MAX_FAVORITES and never repeated in the menu. A config from
+    before these lists keeps every installed app it showed, with the default favorites."""
+    custom = []
+    for a in cfg.get("custom_apps") if isinstance(cfg.get("custom_apps"), list) else []:
+        if (isinstance(a, dict) and isinstance(a.get("appId"), str) and APP_ID_RE.fullmatch(a["appId"])
+                and isinstance(a.get("name"), str) and all(c["appId"] != a["appId"] for c in custom)):
+            custom.append({"appId": a["appId"], "name": a["name"]})
+    cfg["custom_apps"] = custom
+    known = set(CATALOG_BY_KEY) | {CUSTOM + a["appId"] for a in custom}
+
+    def keys(name, default):
+        value = cfg.get(name)
+        if not isinstance(value, list):
+            return list(default)
+        return list(dict.fromkeys(k for k in value if isinstance(k, str) and k in known))
+
+    first_run = not isinstance(cfg.get("menu_apps"), list)
+    favorites = keys("favorites", DEFAULT_FAVORITES)[:MAX_FAVORITES]
+    menu = [k for k in keys("menu_apps", DEFAULT_MENU) if k not in favorites]
+    if first_run:  # nothing the remote listed before disappears
+        menu += [k for k in CATALOG_BY_KEY if k not in favorites and k not in menu and installed_app(cfg, k)]
+    cfg["favorites"], cfg["menu_apps"] = favorites, menu
+
+
+def app_ids(key):
+    """The IDs an app key can have on a TV."""
+    if key.startswith(CUSTOM):
+        return [key.removeprefix(CUSTOM)]
+    return CATALOG_BY_KEY[key]["ids"] if key in CATALOG_BY_KEY else []
+
+
+def installed_app(cfg, key):
+    """The app as the last scan found it on the TV ({"appId", "name"}), or None if it isn't installed."""
+    ids = app_ids(key)
+    return next((a for a in cfg.get("apps") or [] if isinstance(a, dict) and a.get("appId") in ids), None)
+
+
+def app_name(cfg, key):
+    """The TV's name for an installed app, otherwise ours."""
+    if app := installed_app(cfg, key):
+        return app["name"]
+    if key.startswith(CUSTOM):
+        return next((a["name"] for a in cfg["custom_apps"] if CUSTOM + a["appId"] == key), key)
+    return CATALOG_BY_KEY[key]["name"]
+
+
+def key_for_id(app_id):
+    """The key of the app with this ID: its CATALOG entry if it has one."""
+    return next((app["key"] for app in CATALOG if app_id in app["ids"]), CUSTOM + app_id)
 
 
 class TV:
@@ -224,26 +313,38 @@ class TV:
     def _app_url(self, app_id):
         return f"http://{self.cfg['host']}:8001/api/v2/applications/{app_id}"
 
+    def probe_app(self, app_id):
+        """{"appId", "name"} if the TV has this app, None if it says it doesn't (404). Other failures raise."""
+        if not APP_ID_RE.fullmatch(app_id):
+            raise ValueError(f"{app_id!r} isn't an app ID (letters, digits, dots, dashes, underscores)")
+        try:
+            with urllib.request.urlopen(self._app_url(app_id), timeout=3) as r:
+                return {"appId": app_id, "name": str(json.load(r)["name"])}
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            raise
+
     def scan_apps(self):
-        """Installed apps from CATALOG (missing IDs answer 404), saved to config. An ID whose probe
-        failed any other way (timeout while the TV wakes, odd reply) keeps its cached entry, so a slow
-        TV can't make app buttons disappear; a scan that finds nothing keeps the whole cached list."""
+        """Installed apps from CATALOG and the apps added by ID (missing IDs answer 404), saved to config.
+        An ID whose probe failed any other way (timeout while the TV wakes, odd reply) keeps its cached
+        entry, so a slow TV can't make app buttons disappear; a scan that finds nothing keeps the whole
+        cached list."""
         unknown = object()
 
         def probe(app_id):
             try:
-                with urllib.request.urlopen(self._app_url(app_id), timeout=3) as r:
-                    return {"appId": app_id, "name": json.load(r)["name"]}
-            except urllib.error.HTTPError as e:
-                return None if e.code == 404 else unknown  # 404 = not installed
+                return self.probe_app(app_id)
             except (OSError, ValueError, KeyError, TypeError):  # timeouts, odd replies
                 return unknown
 
+        ids = [i for app in CATALOG for i in app["ids"]] + [a["appId"] for a in self.cfg.get("custom_apps") or []]
+        ids = list(dict.fromkeys(ids))
         with ThreadPoolExecutor(8) as ex:
-            results = list(ex.map(probe, CATALOG))
+            results = list(ex.map(probe, ids))
         cached = {a.get("appId"): a for a in self.cfg.get("apps") or [] if isinstance(a, dict)}
         found = []
-        for app_id, result in zip(CATALOG, results, strict=True):
+        for app_id, result in zip(ids, results, strict=True):
             if result is unknown:
                 if app_id in cached:
                     found.append(cached[app_id])
@@ -366,8 +467,9 @@ def run_command(tv, cfg, cmd, rest):
         apps = tv.scan_apps()
         if tv.apps_from_cache:
             print(f"The TV didn't answer at {cfg['host']}; showing the saved list.", file=sys.stderr)
+        favorites = {a["appId"] for k in cfg["favorites"] if (a := installed_app(cfg, k))}
         for a in sorted(apps, key=lambda a: a["name"].lower()):
-            print(f"{a['name']:<28} {a['appId']}")
+            print(f"{'★' if a['appId'] in favorites else ' '} {a['name']:<28} {a['appId']}")
     elif cmd == "launch":
         app = find_app(cfg["apps"] or tv.scan_apps(), " ".join(rest))
         if not app:
