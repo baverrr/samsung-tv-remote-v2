@@ -13,14 +13,18 @@ Ubuntu 26.04 with KDE Plasma on Wayland.
   <img src="docs/remote.png" alt="The remote window: power, status, source, mirror and cast buttons, a d-pad, volume and channel rockers, media keys, app shortcuts and a text box" width="300">
   &nbsp;&nbsp;
   <img src="docs/cast.png" alt="The TV Cast window: pick photos, videos, music or a folder, a now-playing line with a seek bar, playback controls and slideshow settings" width="300">
+  &nbsp;&nbsp;
+  <img src="docs/apps.png" alt="The Edit apps window: a list of apps with a tick for the five shown on the remote and whether each is installed, buttons to move, remove and add apps, and Save" width="300">
 </p>
 
 ## Features
 
 - **Remote keys:** d-pad, OK, Back, Home, Menu, volume, channel, mute, source, info and media keys, with
   keyboard shortcuts. Held keys repeat.
-- **Apps:** buttons for the installed streaming apps (Netflix, YouTube, Prime Video, Disney+, …), found by
-  asking the TV which known apps it has.
+- **Apps:** five app buttons plus an **All apps** menu, both your choice (**All apps › Edit apps…**, or
+  right-click an app button). It starts with Netflix, YouTube, Prime Video, Disney+ and Hulu on the remote
+  and 15 more popular apps in All apps. You can add about 30 popular apps, or any app by its ID under Advanced.
+  The TV is asked which of them it has, and the ones it doesn't have stay hidden.
 - **Typing:** send text to the TV's on-screen keyboard, e.g. a search box.
 - **Power:** off with confirmation (it checks the TV really went to standby, and presses again if the TV
   dropped the first key); on via Wake-on-LAN.
@@ -108,6 +112,9 @@ Settings › General › External Device Manager › Device Connection Manager.
 
 For power-on, enable Settings › General › Network › Expert Settings › **Power On with Mobile**.
 
+Your app choices are saved in the same file: `favorites` (the remote's buttons, in order), `menu_apps`
+(All apps) and `custom_apps` (apps added by ID). The **Edit apps** window is the easy way to change them.
+
 Chat apps kept off the TV while mirroring are listed in `~/.config/tv-remote/mirror-audio.json`. It's
 created with defaults (Discord, Zoom, Teams, Slack, Signal, …) and re-read while mirroring, so edits
 apply without a restart.
@@ -141,7 +148,7 @@ the remote, or the remote and the cast window.
 
 ```sh
 tv-remote key volup mute            # keys, short (volup) or full (KEY_VOLUP) names
-tv-remote apps                      # installed apps and their IDs
+tv-remote apps                      # installed apps and their IDs (★ = on the remote)
 tv-remote launch netflix            # open an app (exact name first, then partial)
 tv-remote text "stranger things"    # type into the TV's on-screen keyboard
 tv-remote on | off                  # power
@@ -183,8 +190,10 @@ audio, and they use a temporary config.
 
 - **Wake-on-LAN is unreliable on some models.** On the AU8000 it's tested on, the TV drops off the network in
   standby and ignores magic packets, so turning it on usually needs the physical remote.
-- **The app list is a catalog** of known Tizen app IDs (`CATALOG` in `tv_remote.py`). Apps not in it don't
-  appear, and a few IDs are unverified.
+- **App IDs come from community lists.** Samsung doesn't publish them, and some apps have a different ID on
+  2020 and later TVs. `CATALOG` in `tv_remote.py` lists every ID known for each app, and the TV is asked which
+  one it has, so a wrong ID only means the app shows as "Not on this TV". Apps outside the catalog can be
+  added by ID (Edit apps › Add apps… › Advanced) once the TV confirms it has them.
 - **No volume over DLNA:** the renderer's own volume isn't the TV's real volume, so casting uses the remote's
   VOL keys instead.
 - **Casting needs the remote running:** files stream from this PC, so closing the remote stops casting.

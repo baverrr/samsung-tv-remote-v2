@@ -1521,3 +1521,246 @@ def test_mac_with_dashes_works(monkeypatch):
     cfg["mac"] = MAC.replace(":", "-").upper()
     core.TV(cfg).wake()
     assert sent_to[0][6:12] == bytes.fromhex(MAC.replace(":", ""))
+
+
+# -- choosing apps: favorites (the remote's buttons) and All apps
+
+def app_buttons(w):
+    """Texts of the app buttons, in grid order, without All apps."""
+    items = [w.apps_grid.itemAt(i) for i in range(w.apps_grid.count() - 1)]
+    return [item.widget().text() for item in items if item and isinstance(item.widget(), QToolButton)]
+
+
+def menu_texts(w):
+    menu = all_apps_button(w).menu()
+    assert menu is not None
+    return [a.text() or "---" for a in menu.actions()]
+
+
+def saved(config):
+    return json.loads(config.read_text())
+
+
+def test_default_app_lists_keep_what_an_older_config_showed():
+    cfg = {"apps": [*APPS, {"appId": "3202203026799", "name": "Xbox"}]}
+    core.clean_app_lists(cfg)
+    assert cfg["favorites"] == core.DEFAULT_FAVORITES
+    assert cfg["menu_apps"] == [*core.DEFAULT_MENU, "xbox"]  # installed, not a default: still listed
+    assert cfg["custom_apps"] == []
+
+
+def test_app_lists_are_cleaned():
+    cfg = {"apps": [], "favorites": ["netflix", "nope", 7, "netflix", "hulu", "youtube", "prime", "disney", "max"],
+           "menu_apps": ["hulu", "spotify", "id:123", "id:999"],
+           "custom_apps": [{"appId": "123", "name": "Mine"}, {"appId": "../x", "name": "Bad"}, "junk",
+                           {"appId": "123", "name": "Twice"}]}
+    core.clean_app_lists(cfg)
+    assert cfg["favorites"] == ["netflix", "hulu", "youtube", "prime", "disney"]  # max 5, no junk, no repeats
+    assert cfg["menu_apps"] == ["spotify", "id:123"]  # favorites aren't repeated; unknown custom IDs dropped
+    assert cfg["custom_apps"] == [{"appId": "123", "name": "Mine"}]
+    cfg = {"apps": [], "favorites": "netflix", "menu_apps": None}
+    core.clean_app_lists(cfg)
+    assert cfg["favorites"] == core.DEFAULT_FAVORITES
+
+
+def test_an_app_is_found_under_any_of_its_ids():
+    cfg = {"apps": [{"appId": "11101200001", "name": "Netflix"}], "custom_apps": []}  # a pre-2020 TV's ID
+    assert core.installed_app(cfg, "netflix") == cfg["apps"][0]
+    assert core.installed_app(cfg, "youtube") is None
+    assert core.key_for_id("3202204027038") == "disney"
+    assert core.key_for_id("3209999999999") == "id:3209999999999"
+
+
+def test_every_catalog_id_belongs_to_one_app():
+    ids = [i for app in core.CATALOG for i in app["ids"]]
+    assert len(ids) == len(set(ids))
+    assert all(core.APP_ID_RE.fullmatch(i) for i in ids)
+    assert set(core.DEFAULT_FAVORITES + core.DEFAULT_MENU) <= set(core.CATALOG_BY_KEY)
+    assert len(core.DEFAULT_FAVORITES) == core.MAX_FAVORITES and len(core.DEFAULT_MENU) == 15
+
+
+def test_scan_also_asks_about_apps_added_by_id(monkeypatch, config):
+    cfg = core.load_config()
+    cfg["custom_apps"] = [{"appId": "3209999999999", "name": "Mine"}]
+    asked = []
+
+    def probe(self, app_id):
+        asked.append(app_id)
+        return {"appId": app_id, "name": "Mine"} if app_id == "3209999999999" else None
+    monkeypatch.setattr(core.TV, "probe_app", probe)
+    assert core.TV(cfg).scan_apps() == [{"appId": "3209999999999", "name": "Mine"}]
+    assert "3209999999999" in asked and "11101200001" in asked  # every ID of every catalog app
+
+
+def test_probe_refuses_anything_but_an_id(monkeypatch):
+    monkeypatch.setattr(core.urllib.request, "urlopen", lambda *a, **k: pytest.fail("asked the TV"))
+    with pytest.raises(ValueError, match="isn't an app ID"):
+        core.TV(core.load_config()).probe_app("../../api/v2")
+
+
+def test_cli_apps_stars_the_favorites(monkeypatch, capsys):
+    monkeypatch.setattr(core.TV, "scan_apps", lambda self: self.cfg["apps"])
+    core.run_command(core.TV(core.load_config()), core.load_config(), "apps", [])
+    lines = capsys.readouterr().out.splitlines()
+    assert [line[0] for line in lines] == ["★", "★", " ", "★"]  # Hulu, Netflix, Spotify, YouTube
+
+
+def test_buttons_follow_the_chosen_order_and_skip_missing_apps(qtbot, qapp, sent, config):
+    config.write_text(json.dumps({"host": HOST, "mac": MAC, "token": "test", "apps": APPS,
+                                  "favorites": ["spotify", "max", "netflix"], "menu_apps": ["youtube", "plex"]}))
+    w = rq.RemoteWindow(core.load_config())
+    qtbot.addWidget(w)
+    assert app_buttons(w) == ["Spotify", "Netflix"]  # Max isn't installed
+    # Plex isn't installed; Hulu is, but it's in neither list
+    assert menu_texts(w) == ["YouTube", "---", "Edit apps…"]
+
+
+def test_favorite_can_be_moved_and_removed_from_its_button(qtbot, remote, config):
+    assert app_buttons(remote) == ["Netflix", "YouTube", "Hulu"]
+    button = next(b for b in remote.findChildren(QToolButton) if b.text() == "YouTube")
+    remote.favorite_menu("youtube", button, QPoint(1, 1))
+    menu = remote.favorite_popup
+    actions = {a.text(): a for a in menu.actions()}
+    assert actions["Move left"].isEnabled() and actions["Move right"].isEnabled()
+    actions["Move left"].trigger()
+    assert app_buttons(remote) == ["YouTube", "Netflix", "Hulu"]
+    assert saved(config)["favorites"][:2] == ["youtube", "netflix"]
+    remote.unfavorite("youtube")
+    assert app_buttons(remote) == ["Netflix", "Hulu"]
+    assert saved(config)["menu_apps"][0] == "youtube"
+    assert "YouTube" in menu_texts(remote)
+
+
+@pytest.fixture
+def apps_dialog(qtbot, remote):
+    remote.edit_apps()
+    d = remote.apps_dialog
+    assert d is not None
+    qtbot.waitUntil(lambda: d.checked is not None, timeout=3000)
+    return d
+
+
+def item_texts(lst):
+    return [lst.item(i).text() for i in range(lst.count())]
+
+
+def test_edit_apps_shows_what_the_tv_has(apps_dialog):
+    texts = item_texts(apps_dialog.list)
+    assert texts[0] == "Netflix  ·  Installed" and "Prime Video  ·  Not on this TV" in texts
+    assert apps_dialog.ticked() == core.DEFAULT_FAVORITES
+    apps_dialog.checked_tv(False)
+    assert "Prime Video  ·  Couldn't check (is the TV on?)" in item_texts(apps_dialog.list)
+
+
+def test_only_five_apps_can_be_ticked(apps_dialog):
+    item = apps_dialog.list.item(5)  # the first All apps entry
+    item.setCheckState(Qt.CheckState.Checked)
+    assert item.checkState() == Qt.CheckState.Unchecked
+    assert "Only 5 apps fit" in apps_dialog.note.text()
+    apps_dialog.list.item(0).setCheckState(Qt.CheckState.Unchecked)
+    item.setCheckState(Qt.CheckState.Checked)
+    assert item.checkState() == Qt.CheckState.Checked and apps_dialog.note.text() == ""
+
+
+def test_edit_apps_save_reorders_and_removes(qtbot, remote, apps_dialog, config):
+    d = apps_dialog
+    d.list.setCurrentRow(2)  # Prime Video
+    d.remove_selected()
+    d.list.setCurrentRow(3)  # Hulu, after Disney+
+    d.move_selected(-1)
+    assert d.app_keys()[:4] == ["netflix", "youtube", "hulu", "disney"]
+    d.list.setCurrentRow(0)
+    assert not d.up.isEnabled() and d.down.isEnabled()
+    d.save()
+    assert saved(config)["favorites"] == ["netflix", "youtube", "hulu", "disney"]
+    assert "prime" not in saved(config)["menu_apps"]
+    assert app_buttons(remote) == ["Netflix", "YouTube", "Hulu"]
+    qtbot.waitUntil(lambda: remote.apps_dialog is None)
+
+
+def test_edit_apps_cancel_changes_nothing(qtbot, remote, apps_dialog, config):
+    before = config.read_text()
+    apps_dialog.list.setCurrentRow(0)
+    apps_dialog.remove_selected()
+    apps_dialog.reject()
+    assert config.read_text() == before
+    assert app_buttons(remote) == ["Netflix", "YouTube", "Hulu"]
+
+
+def test_reset_brings_back_the_defaults(apps_dialog):
+    apps_dialog.list.clear()
+    apps_dialog.custom = [{"appId": "123", "name": "Mine"}]
+    apps_dialog.reset()
+    assert apps_dialog.app_keys() == core.DEFAULT_FAVORITES + core.DEFAULT_MENU
+    assert apps_dialog.custom == []
+
+
+@pytest.fixture
+def add_dialog(qtbot, apps_dialog):
+    apps_dialog.open_add()
+    a = apps_dialog.add_dialog
+    assert a is not None
+    return a
+
+
+def enabled_keys(lst):
+    return [lst.item(i).data(rq.KEY_ROLE) for i in range(lst.count()) if lst.item(i).flags() & Qt.ItemFlag.ItemIsEnabled]
+
+
+def test_add_lists_only_installed_apps_as_addable(apps_dialog, add_dialog):
+    assert enabled_keys(add_dialog.list) == []  # Spotify, the only other installed app, is in All apps already
+    add_dialog.reject()
+    apps_dialog.list.setCurrentRow(apps_dialog.app_keys().index("spotify"))
+    apps_dialog.remove_selected()
+    apps_dialog.open_add()
+    add_dialog = apps_dialog.add_dialog
+    assert add_dialog is not None
+    lst = add_dialog.list
+    assert enabled_keys(lst) == ["spotify"]
+    assert item_texts(lst)[0] == "Spotify  ·  Installed"  # installed first
+    lst.item(0).setSelected(True)
+    assert add_dialog.add.isEnabled()
+    add_dialog.add_selected()
+    assert apps_dialog.app_keys()[-1] == "spotify"
+    assert apps_dialog.list.item(apps_dialog.list.count() - 1).checkState() == Qt.CheckState.Unchecked
+
+
+def test_add_by_id_asks_the_tv(qtbot, remote, apps_dialog, add_dialog, config, monkeypatch):
+    replies = {"3209999999999": {"appId": "3209999999999", "name": "Mine"}, "3208888888888": None}
+
+    def probe(self, app_id):
+        if app_id not in replies:
+            raise TimeoutError("timed out")
+        return replies[app_id]
+    monkeypatch.setattr(core.TV, "probe_app", probe)
+    add_dialog.advanced.setChecked(True)
+    for text, note in (("not an id!", "That isn't an app ID"), ("3201907018807", "Netflix is already in your apps."),
+                       ("3208888888888", "The TV doesn't have an app with the ID 3208888888888."),
+                       ("3207777777777", "Couldn't ask the TV: timed out"),
+                       ("3209999999999", "Added Mine to All apps.")):
+        add_dialog.id_entry.setText(text)
+        add_dialog.check_id()
+        qtbot.waitUntil(lambda n=note: add_dialog.id_note.text().startswith(n), timeout=3000)
+    assert apps_dialog.app_keys()[-1] == "id:3209999999999"
+    apps_dialog.save()
+    cfg = saved(config)
+    assert cfg["custom_apps"] == [{"appId": "3209999999999", "name": "Mine"}]
+    assert "id:3209999999999" in cfg["menu_apps"]
+    assert "Mine" in menu_texts(remote)
+
+
+def test_a_catalog_id_typed_in_adds_the_catalog_app(qtbot, apps_dialog, add_dialog, monkeypatch):
+    monkeypatch.setattr(core.TV, "probe_app", lambda self, app_id: {"appId": app_id, "name": "Xbox"})
+    add_dialog.id_entry.setText("3202203026799")
+    add_dialog.check_id()
+    qtbot.waitUntil(lambda: apps_dialog.app_keys()[-1] == "xbox", timeout=3000)
+    assert apps_dialog.custom == []
+    assert item_texts(apps_dialog.list)[-1] == "Xbox  ·  Installed"
+
+
+def test_edit_apps_is_reached_from_the_all_apps_menu(qtbot, remote):
+    menu = all_apps_button(remote).menu()
+    assert menu is not None
+    next(a for a in menu.actions() if a.text() == "Edit apps…").trigger()
+    assert remote.apps_dialog is not None and remote.apps_dialog.isVisible()
+    remote.apps_dialog.reject()
