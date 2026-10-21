@@ -199,6 +199,12 @@ audio, and they use a temporary config.
 - **Casting needs the remote running:** files stream from this PC, so closing the remote stops casting.
 - **One TV:** settings hold a single TV.
 
+## Privacy and terms
+
+The remote collects nothing and talks only to your TV on your own network. What it keeps on your
+computer, and what goes over the network, is in the [Privacy Policy](PRIVACY.md). Use of the app
+is covered by the [Terms and Conditions](TERMS.md).
+
 ## Credits
 
 Icons are from [Lucide](https://lucide.dev) (ISC License; see `icons/LICENSE-lucide`).
