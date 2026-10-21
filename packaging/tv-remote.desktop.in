@@ -3,7 +3,7 @@ Type=Application
 Name=TV Remote
 GenericName=TV Remote Control
 Comment=Control, cast to and mirror onto a Samsung TV
-Exec=@BIN@ %u
+Exec="@BIN@" %u
 Icon=tvremote
 Terminal=false
 StartupNotify=true
@@ -16,4 +16,4 @@ Actions=Cast;
 
 [Desktop Action Cast]
 Name=Cast Files to TV…
-Exec=@BIN@ tvremote://cast
+Exec="@BIN@" tvremote://cast

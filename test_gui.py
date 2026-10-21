@@ -35,7 +35,7 @@ KEYS = [(Qt.Key.Key_Up, "KEY_UP"), (Qt.Key.Key_Down, "KEY_DOWN"), (Qt.Key.Key_Le
         (Qt.Key.Key_S, "KEY_SOURCE"), (Qt.Key.Key_I, "KEY_INFO")]
 
 
-HOST, MAC = core.DEFAULTS["host"], core.DEFAULTS["mac"]  # the TV the tests pretend to talk to
+HOST, MAC = "192.0.2.55", "00:00:5e:00:53:55"  # the TV the tests pretend to talk to (documentation addresses)
 APPS = [{"appId": "3201907018807", "name": "Netflix"}, {"appId": "111299001912", "name": "YouTube"},
         {"appId": "3201601007625", "name": "Hulu"}, {"appId": "3201606009684", "name": "Spotify"}]
 
@@ -44,7 +44,7 @@ APPS = [{"appId": "3201907018807", "name": "Netflix"}, {"appId": "111299001912",
 def config(monkeypatch, tmp_path):
     """A temporary config with a fixed app list, so tests never read or write the real one."""
     path = tmp_path / "config.json"
-    path.write_text(json.dumps({"token": "test", "apps": APPS}))
+    path.write_text(json.dumps({"host": HOST, "mac": MAC, "token": "test", "apps": APPS}))
     monkeypatch.setattr(core, "CONFIG", path)
     return path
 
@@ -1004,7 +1004,7 @@ def no_reader(monkeypatch):
     ("test", "rotated", "rotated"),
 ])
 def test_connect_saves_the_pairing_token(monkeypatch, config, no_reader, saved, offered, stored):
-    config.write_text(json.dumps({"token": saved, "apps": APPS}))
+    config.write_text(json.dumps({"host": HOST, "mac": MAC, "token": saved, "apps": APPS}))
     events, urls = [], []
     ws = FakeWS([{"event": "ms.channel.connect", "data": {"token": offered}}])
     monkeypatch.setattr(core.websocket, "create_connection", lambda url, **kw: urls.append(url) or ws)
@@ -1179,7 +1179,7 @@ def all_apps_button(w):
     ("apps", [], "No apps found"),
 ])
 def test_apps_button_says_why_there_are_no_apps(qtbot, qapp, sent, config, event, data, text):
-    config.write_text(json.dumps({"token": "test", "apps": []}))
+    config.write_text(json.dumps({"host": HOST, "mac": MAC, "token": "test", "apps": []}))
     w = rq.RemoteWindow(core.load_config())
     qtbot.addWidget(w)
     w.on_event(event, data)
@@ -1188,7 +1188,7 @@ def test_apps_button_says_why_there_are_no_apps(qtbot, qapp, sent, config, event
 
 
 def test_apps_load_once_the_tv_connects_after_being_off(qtbot, qapp, sent, config, monkeypatch):
-    config.write_text(json.dumps({"token": "test", "apps": []}))
+    config.write_text(json.dumps({"host": HOST, "mac": MAC, "token": "test", "apps": []}))
     w = rq.RemoteWindow(core.load_config())
     qtbot.addWidget(w)
     w.on_event("off", "No route to host")
@@ -1473,3 +1473,51 @@ def test_find_app_prefers_an_exact_name():
     assert core.find_app(apps, "netflix") == apps[1]
     assert core.find_app(apps, "kids") == apps[0]
     assert core.find_app(apps, "hulu") is None
+
+
+@pytest.mark.parametrize("cfg", [None, {}, {"host": ""}, {"host": "192.0.2.10"}])
+def test_an_unset_tv_asks_to_be_set_up(config, monkeypatch, cfg):
+    monkeypatch.setitem(core.DEFAULTS, "host", core.UNSET_HOST)  # as shipped publicly: no TV
+    if cfg is None:
+        config.unlink()  # a new user: no config file at all
+    else:
+        config.write_text(json.dumps(cfg))
+    with pytest.raises(core.ConfigError, match=r"^No TV is set up yet\. Put your TV's address in "):
+        core.load_config()
+    with pytest.raises(SystemExit, match="No TV is set up yet"):
+        core.cli(["key", "mute"])
+
+
+@pytest.mark.parametrize("mac", [None, "", "00:00:5e:00:53:01", "not a mac", "aa:bb:cc"])
+def test_power_on_without_a_mac_says_how_to_set_it(monkeypatch, mac):
+    cfg = core.load_config()
+    cfg["mac"] = mac
+    monkeypatch.setattr(core.socket, "socket", lambda *a: pytest.fail("no packet without a MAC"))
+    with pytest.raises(RuntimeError, match=r"^To turn the TV on, put its MAC address in "):
+        core.TV(cfg).wake()
+
+
+def test_mac_with_dashes_works(monkeypatch):
+    sent_to = []
+
+    class Sock:
+        def __init__(self, *args):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def setsockopt(self, *args):
+            pass
+
+        def sendto(self, data, addr):
+            sent_to.append(data)
+
+    monkeypatch.setattr(core.socket, "socket", Sock)
+    cfg = core.load_config()
+    cfg["mac"] = MAC.replace(":", "-").upper()
+    core.TV(cfg).wake()
+    assert sent_to[0][6:12] == bytes.fromhex(MAC.replace(":", ""))

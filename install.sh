@@ -17,9 +17,21 @@ for arg in "$@"; do
     esac
 done
 
+# The paths go into a shell script, a .desktop file and a systemd unit; these characters would need
+# different escaping in each (systemd expands %, the launcher would expand $ and `).
+for dir in "$APP_DIR" "$BIN_DIR"; do
+    case "$dir" in
+        *[\"\$\`%\\]*) echo "Can't install from $dir: move the checkout to a path without \" \$ \` % or \\" >&2; exit 1 ;;
+    esac
+done
+
+sed_escape() {  # make $1 safe as a sed replacement (| is the delimiter, & means "the match")
+    printf '%s' "$1" | sed 's/[|&]/\\&/g'
+}
+
 fill() {  # template -> destination, with @APP_DIR@ and @BIN@ filled in
     mkdir -p "$(dirname "$2")"
-    sed -e "s|@APP_DIR@|$APP_DIR|g" -e "s|@BIN@|$BIN_DIR/tv-remote|g" "$1" > "$2"
+    sed -e "s|@APP_DIR@|$(sed_escape "$APP_DIR")|g" -e "s|@BIN@|$(sed_escape "$BIN_DIR/tv-remote")|g" "$1" > "$2"
 }
 
 if ! python3 -c "import PySide6.QtWidgets, PySide6.QtSvg" 2>/dev/null; then

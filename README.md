@@ -83,9 +83,8 @@ sudo ufw allow from <TV address> to any port 8199 proto tcp
 
 ## Setup
 
-Settings live in `~/.config/tv-remote/config.json`. The remote writes it when it first pairs with the TV
-(or you can create it first). It holds the pairing token, so it's saved readable only by you. Set your
-TV's details there:
+Settings live in `~/.config/tv-remote/config.json`. Create it with your TV's details; the remote adds the
+pairing token and the app list to it, and saves it readable only by you:
 
 ```json
 {
@@ -99,7 +98,7 @@ TV's details there:
 - **`mac`:** the TV's MAC address, used for Wake-on-LAN.
 - **`name`:** what the TV calls this remote.
 
-The code's defaults are placeholders (192.0.2.10 and 00:00:5e:00:53:01, addresses reserved for documentation), so set `host` and `mac`.
+Until `host` is set, the remote says so instead of starting.
 
 On the first connection the TV asks to **Allow** the remote. If you denied it, allow it under
 Settings › General › External Device Manager › Device Connection Manager.
