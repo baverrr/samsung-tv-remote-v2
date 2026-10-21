@@ -57,7 +57,7 @@ Ubuntu 26.04 with KDE Plasma on Wayland.
 ## Install
 
 ```sh
-git clone https://github.com/jeffbeaver7-afk/samsung-tv-remote-v2.git ~/.local/share/tv-remote
+git clone https://github.com/baverrr/samsung-tv-remote-v2.git ~/.local/share/tv-remote
 cd ~/.local/share/tv-remote
 ./install.sh            # add --audio for sound on the TV while mirroring
 ```
