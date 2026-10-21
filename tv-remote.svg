@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- A classic handheld TV remote (number pad, d-pad, rockers), tilted. SVG Tiny only: no filters,
+       so KDE's icon loader (QtSvg) renders it the same as a browser. -->
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3b414d"/>
+      <stop offset=".45" stop-color="#2a2e37"/>
+      <stop offset="1" stop-color="#16181d"/>
+    </linearGradient>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f343e"/>
+      <stop offset="1" stop-color="#1d2026"/>
+    </linearGradient>
+    <linearGradient id="key" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e9ecf2"/>
+      <stop offset="1" stop-color="#aab1bf"/>
+    </linearGradient>
+    <linearGradient id="power" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff6b6f"/>
+      <stop offset="1" stop-color="#d13438"/>
+    </linearGradient>
+    <linearGradient id="ok" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7aa8ff"/>
+      <stop offset="1" stop-color="#3b74e6"/>
+    </linearGradient>
+  </defs>
+
+  <g transform="rotate(-35 128 128)">
+    <!-- shadow -->
+    <rect x="92" y="24" width="84" height="220" rx="30" fill="#000" opacity=".28"/>
+    <!-- body and face plate -->
+    <rect x="86" y="18" width="84" height="220" rx="30" fill="url(#body)"/>
+    <rect x="92" y="24" width="72" height="208" rx="25" fill="url(#face)"/>
+    <!-- light rim so the dark body still reads on dark panels -->
+    <rect x="87" y="19" width="82" height="218" rx="29" fill="none" stroke="#8b93a3" stroke-width="2"/>
+
+    <!-- IR window -->
+    <rect x="112" y="27" width="32" height="7" rx="3.5" fill="#0b0c0f"/>
+    <rect x="116" y="28.5" width="12" height="2" rx="1" fill="#c43b3f" opacity=".7"/>
+
+    <!-- power + source -->
+    <circle cx="149" cy="50" r="9" fill="url(#power)"/>
+    <path d="M149 45.5v4.5 M145.6 47.6a4.8 4.8 0 1 0 6.8 0" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+    <rect x="99" y="45" width="24" height="10" rx="5" fill="#545b69"/>
+
+    <!-- number pad 1-9, 0 -->
+    <g fill="url(#key)">
+      <circle cx="106" cy="76" r="7.5"/><circle cx="128" cy="76" r="7.5"/><circle cx="150" cy="76" r="7.5"/>
+      <circle cx="106" cy="95" r="7.5"/><circle cx="128" cy="95" r="7.5"/><circle cx="150" cy="95" r="7.5"/>
+      <circle cx="106" cy="114" r="7.5"/><circle cx="128" cy="114" r="7.5"/><circle cx="150" cy="114" r="7.5"/>
+      <circle cx="128" cy="133" r="7.5"/>
+    </g>
+    <rect x="99" y="129" width="14" height="8" rx="4" fill="#545b69"/>
+    <rect x="143" y="129" width="14" height="8" rx="4" fill="#545b69"/>
+
+    <!-- d-pad ring with OK -->
+    <circle cx="128" cy="168" r="23" fill="#41474f"/>
+    <circle cx="128" cy="168" r="23" fill="none" stroke="#5c6371" stroke-width="1"/>
+    <path d="M128 148.5l4 5h-8z M128 187.5l4 -5h-8z M108.5 168l5 -4v8z M147.5 168l-5 -4v8z" fill="#c7ccd6"/>
+    <circle cx="128" cy="168" r="10" fill="url(#ok)"/>
+
+    <!-- volume / channel rockers + mute -->
+    <rect x="98" y="198" width="16" height="28" rx="8" fill="#545b69"/>
+    <rect x="142" y="198" width="16" height="28" rx="8" fill="#545b69"/>
+    <path d="M102.5 205h7 M106 201.5v7 M102.5 220h7" stroke="#e1e5ec" stroke-width="1.8" stroke-linecap="round"/>
+    <path d="M146.5 207l3.5 -3.5l3.5 3.5 M146.5 217l3.5 3.5l3.5 -3.5" fill="none" stroke="#e1e5ec" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="128" cy="210" r="5.5" fill="#545b69"/>
+  </g>
+</svg>

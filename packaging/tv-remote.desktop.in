@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Application
+Name=TV Remote
+GenericName=TV Remote Control
+Comment=Control, cast to and mirror onto a Samsung TV
+Exec=@BIN@ %u
+Icon=tvremote
+Terminal=false
+StartupNotify=true
+StartupWMClass=tv-remote
+Categories=AudioVideo;
+Keywords=samsung;tv;remote;cast;mirror;dlna;
+# tvremote:// links open this app; tvremote://cast also opens TV Cast
+MimeType=x-scheme-handler/tvremote;
+Actions=Cast;
+
+[Desktop Action Cast]
+Name=Cast Files to TV…
+Exec=@BIN@ tvremote://cast
