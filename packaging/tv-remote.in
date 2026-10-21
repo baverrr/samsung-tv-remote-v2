@@ -1,0 +1,3 @@
+#!/bin/sh
+# Launcher installed to ~/.local/bin/tv-remote by install.sh, pointing at the checkout it ran from.
+exec "@APP_DIR@/venv/bin/python" -I "@APP_DIR@/tv_remote.py" "$@"
