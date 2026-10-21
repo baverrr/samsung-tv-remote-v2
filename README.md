@@ -17,6 +17,17 @@ Ubuntu 26.04 with KDE Plasma on Wayland.
   <img src="docs/apps.png" alt="The Edit apps window: a list of apps with a tick for the five shown on the remote and whether each is installed, buttons to move, remove and add apps, and Save" width="300">
 </p>
 
+> [!IMPORTANT]
+> **Disclaimer.** This is an independent project. It isn't made, endorsed, sponsored or
+> supported by Samsung Electronics. "Samsung", "Tizen" and related names are trademarks of
+> their owners, used here only to say which TVs the remote works with.
+>
+> - **Use at your own risk.** The remote is provided as is, without warranty (see the
+>   [Terms and Conditions](TERMS.md)). Samsung can change its TVs' software at any time,
+>   which may stop some or all features from working.
+> - **Use it only with TVs you own or are allowed to control.**
+> - **Cast or mirror only content you have the right to show.**
+
 ## Features
 
 - **Remote keys:** d-pad, OK, Back, Home, Menu, volume, channel, mute, source, info and media keys, with
