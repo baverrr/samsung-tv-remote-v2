@@ -3,8 +3,8 @@ name: CodeQL
 # Code scanning for the Python code and these workflow files. On a public repository the
 # results go to the Security tab. A private repository on a personal account has no code
 # scanning (that needs GitHub Advanced Security), so there the findings become annotations
-# and a table in the run summary, the run fails if there are any, and the SARIF files are
-# kept as an artifact.
+# and a table in the run summary, the run fails on any warning or error (notes, CodeQL's
+# low-confidence findings, are only shown), and the SARIF files are kept as an artifact.
 
 on:
   push:
@@ -60,7 +60,7 @@ jobs:
           def esc(text):  # workflow-command escaping
               return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
-          rows = []
+          rows, failing = [], 0
           for path in glob.glob("sarif-results/*.sarif"):
               with open(path) as f:
                   runs = json.load(f)["runs"]
@@ -71,19 +71,20 @@ jobs:
                       line = where.get("region", {}).get("startLine", 1)
                       text = res["message"]["text"]
                       level = {"error": "error", "warning": "warning"}.get(res.get("level"), "notice")
+                      failing += level != "notice"
                       print(f"::{level} file={file},line={line},title={res['ruleId']}::{esc(text)}")
                       rows.append(f"| `{res['ruleId']}` | `{file}:{line}` | {text.splitlines()[0]} |")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
               summary.write(f"### CodeQL ({os.environ['LANGUAGE']}): {len(rows)} finding(s)\n\n")
               if rows:
                   summary.write("| Rule | Where | Message |\n|---|---|---|\n" + "\n".join(rows) + "\n")
-          sys.exit(1 if rows else 0)
+          sys.exit(1 if failing else 0)
         env:
           LANGUAGE: ${{ matrix.language }}
 
       - name: Keep the SARIF files
         if: always() && steps.repo.outputs.private == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: codeql-${{ matrix.language }}
           path: sarif-results
