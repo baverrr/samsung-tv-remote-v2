@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 400" width="880" height="400" role="img" aria-labelledby="t d">
+  <title id="t">Mirroring one window</title>
+  <desc id="d">A browser window on the PC is sent to the TV over Miracast. Whatever size the window is, it is scaled to fit the TV's 1920 by 1080 picture with black bars, never stretched: a wide window gets bars above and below, a tall one gets bars at the sides, and a 16 by 9 window fills the screen.</desc>
+  <style>
+    text { font-family: "Noto Sans", "Segoe UI", "Helvetica Neue", Arial, sans-serif; fill: #f1f3f7; }
+    .muted { fill: #a3abba; }
+    .small { font-size: 13px; }
+    .label { font-size: 15px; font-weight: 600; }
+    .title { font-size: 20px; font-weight: 700; }
+    .card { fill: #181b21; stroke: #373d49; }
+    .panel { fill: #1f232a; stroke: #373d49; }
+    .screen { fill: #000000; stroke: #666d7c; }
+    .win { fill: #262b34; stroke: #5b93ff; stroke-width: 2; }
+    .bar { fill: #30363f; }
+    .video { fill: #2f6fe4; }
+    .arrow { stroke: #5b93ff; stroke-width: 2.5; fill: none; }
+    .head { fill: #5b93ff; }
+  </style>
+
+  <rect class="card" x="1" y="1" width="878" height="398" rx="18"/>
+  <text class="title" x="32" y="46">Mirror one window, at any size</text>
+  <text class="muted small" x="32" y="70">Resize it or take a video full screen: the TV keeps playing, scaled to fit, never stretched.</text>
+
+  <!-- PC: a browser window -->
+  <rect class="panel" x="32" y="96" width="250" height="168" rx="12"/>
+  <rect class="win" x="54" y="116" width="206" height="128" rx="6"/>
+  <rect class="bar" x="55" y="117" width="204" height="18" rx="5"/>
+  <circle cx="66" cy="126" r="3.5" fill="#e5484d"/><circle cx="78" cy="126" r="3.5" fill="#f5a524"/><circle cx="90" cy="126" r="3.5" fill="#3dd68c"/>
+  <rect class="video" x="72" y="148" width="170" height="84" rx="4"/>
+  <path d="M150 178 l0 24 l20 -12 z" fill="#ffffff"/>
+  <text class="label" x="32" y="290">Browser window</text>
+  <text class="muted small" x="32" y="310">Shared on its own, any size</text>
+
+  <!-- Arrow: Miracast -->
+  <path class="arrow" d="M300 180 H560"/>
+  <path class="head" d="M572 180 l-14 -8 v16 z"/>
+  <text class="label" x="430" y="160" text-anchor="middle">Miracast over Wi-Fi Direct</text>
+  <text class="muted small" x="430" y="206" text-anchor="middle">GNOME Network Displays (patched)</text>
+  <text class="muted small" x="430" y="226" text-anchor="middle">H.264 at 1920×1080, sound included</text>
+
+  <!-- TV -->
+  <rect class="panel" x="590" y="96" width="258" height="168" rx="12"/>
+  <rect class="screen" x="608" y="112" width="222" height="125" rx="3"/>
+  <rect class="video" x="628" y="128" width="182" height="93" rx="2"/>
+  <path d="M711 162 l0 24 l20 -12 z" fill="#ffffff"/>
+  <rect x="694" y="241" width="50" height="6" rx="3" fill="#373d49"/>
+  <text class="label" x="590" y="290">TV</text>
+  <text class="muted small" x="590" y="310">Window fitted into 16:9</text>
+
+  <!-- How shapes fit -->
+  <line x1="32" y1="334" x2="848" y2="334" stroke="#373d49"/>
+  <text class="muted small" x="32" y="362">Wide window</text>
+  <rect class="screen" x="128" y="346" width="64" height="36" rx="2"/>
+  <rect class="win" x="129" y="355" width="62" height="18"/>
+  <text class="muted small" x="210" y="362">bars above and below</text>
+
+  <text class="muted small" x="372" y="362">Tall window</text>
+  <rect class="screen" x="460" y="346" width="64" height="36" rx="2"/>
+  <rect class="win" x="478" y="347" width="28" height="34"/>
+  <text class="muted small" x="542" y="362">bars at the sides</text>
+
+  <text class="muted small" x="682" y="362">16:9 window</text>
+  <rect class="screen" x="772" y="346" width="64" height="36" rx="2"/>
+  <rect class="win" x="773" y="347" width="62" height="34"/>
+</svg>
