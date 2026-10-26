@@ -39,6 +39,41 @@ index 21876e6..cba2e7d 100644
                                NULL);
    sinkfilter = gst_element_factory_make ("capsfilter", "cc-sinkfilter");
    success &= gst_bin_add (bin, sinkfilter);
+diff --git a/src/nd-pulseaudio.c b/src/nd-pulseaudio.c
+index a258a8f..93c8f27 100644
+--- a/src/nd-pulseaudio.c
++++ b/src/nd-pulseaudio.c
+@@ -264,16 +264,20 @@ nd_pulseaudio_state_cb (pa_context *context,
+       break;
+ 
+     case PA_CONTEXT_READY:
+-      if (!self->init_task)
+-        return;
+-
+-      g_debug ("NdPulseaudio: Querying sink info by name");
+-      g_autofree gchar *sink_name = g_strdup_printf (ND_PA_SINK "_%.8s", self->uuid);
+-      self->operation = pa_context_get_sink_info_by_name (self->context,
+-                                                          sink_name,
+-                                                          on_pa_nd_sink_got_info,
+-                                                          self);
+-      break;
++      {
++        /* Braces scope sink_name to this case: without them a jump to another case label
++         * (TERMINATED, on finalize) skips its initialisation, but g_autofree still frees it. */
++        if (!self->init_task)
++          return;
++
++        g_debug ("NdPulseaudio: Querying sink info by name");
++        g_autofree gchar *sink_name = g_strdup_printf (ND_PA_SINK "_%.8s", self->uuid);
++        self->operation = pa_context_get_sink_info_by_name (self->context,
++                                                            sink_name,
++                                                            on_pa_nd_sink_got_info,
++                                                            self);
++        break;
++      }
+ 
+     case PA_CONTEXT_FAILED:
+     case PA_CONTEXT_TERMINATED:
 diff --git a/src/stream/nd-stream.c b/src/stream/nd-stream.c
 index 709c286..afd0fcf 100644
 --- a/src/stream/nd-stream.c

@@ -4,7 +4,8 @@
 # when it is resized (or a video in it goes full screen). The fix that matters: pipewiresrc no longer
 # clocks the pipeline, since its clock stops while a resize is renegotiated and everything waiting on
 # it hangs. Also: square pixels before the encoder (a window of any shape is letterboxed, and the
-# encoder's input never changes), a non-async capture sink, and frames copied out of PipeWire.
+# encoder's input never changes), a non-async capture sink, frames copied out of PipeWire, and a
+# crash on exit fixed.
 # The build runs in a container of this machine's Ubuntu release, so no -dev packages are installed here.
 #   tools/build-gnd.sh [version]     (default: the installed gnome-network-displays version)
 set -eu
