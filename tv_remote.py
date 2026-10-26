@@ -428,7 +428,9 @@ def find_app(apps, name):
 
 def start_mirroring():
     """Opens GNOME Network Displays (Miracast over Wi-Fi Direct); the TV is picked there."""
-    exe = shutil.which("gnome-network-displays")
+    # A local build patched to survive a shared window being resized, if there is one (tools/build-gnd.sh)
+    patched = Path.home() / ".local" / "opt" / "gnd" / "bin" / "gnome-network-displays"
+    exe = str(patched) if os.access(patched, os.X_OK) else shutil.which("gnome-network-displays")
     if not exe:
         raise RuntimeError("Mirroring needs GNOME Network Displays: sudo apt install gnome-network-displays")
     subprocess.Popen([exe], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
