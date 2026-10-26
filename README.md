@@ -42,8 +42,10 @@ Ubuntu 26.04 with KDE Plasma on Wayland.
 - **TV Cast:** play photos, videos, music or whole folders on the TV over DLNA, with a queue, seek bar,
   next/previous, pause and an optional photo slideshow. HEIC, WebP, GIF, TIFF and AVIF photos are converted
   to JPEG on the fly. Drag and drop files onto the cast window.
-- **Screen mirroring:** opens GNOME Network Displays (Miracast). A small background service sends the PC's
-  sound to the TV while mirroring, but keeps chat and call apps (Discord, Zoom, Teams, …) on your headset.
+- **Screen mirroring:** opens GNOME Network Displays (Miracast). Share the whole screen or just one window,
+  e.g. a browser: with the [patched build](#mirroring-one-window) you can resize the window or take a video
+  full screen and the TV keeps playing, scaled to fit. A small background service sends the PC's sound to
+  the TV while mirroring, but keeps chat and call apps (Discord, Zoom, Teams, …) on your headset.
 - **Desktop integration:** a single window (launching again brings it forward), `tvremote://` links to open
   the remote or the cast window, and a "Cast Files to TV…" action in the app menu.
 - **Command line:** every main action, scriptable.
@@ -57,7 +59,7 @@ Ubuntu 26.04 with KDE Plasma on Wayland.
 | Power state | `http://TV:8001/api/v2/` reports `PowerState` (on / standby); no answer means off or unreachable. |
 | Power on | Wake-on-LAN magic packet to the LAN broadcast address. |
 | Casting | The TV's DLNA renderer (UPnP AVTransport on port 9197). A small HTTP server on this PC (port **8199**) serves the file that's playing, only to the TV's address, under an unguessable link that stops working as soon as the queue moves on. |
-| Mirroring | GNOME Network Displays (Miracast over Wi-Fi Direct). `mirror_audio.py` watches PipeWire (`pactl subscribe`) and routes app audio while a session is streaming. |
+| Mirroring | GNOME Network Displays (Miracast over Wi-Fi Direct): the patched build in `~/.local/opt/gnd` if there is one, otherwise the system copy. `mirror_audio.py` watches PipeWire (`pactl subscribe`) and routes app audio while a session is streaming. |
 
 ## Requirements
 
@@ -68,7 +70,8 @@ Ubuntu 26.04 with KDE Plasma on Wayland.
 - `websocket-client` (installed into a virtual environment below).
 - Optional:
   - `ffmpeg`, to cast HEIC, WebP, GIF, TIFF and AVIF photos.
-  - `gnome-network-displays`, for screen mirroring.
+  - `gnome-network-displays`, for screen mirroring (and Docker, to build the patched copy that mirrors one
+    window reliably).
   - `kdialog`, for start-up error pop-ups.
 - The TV and this PC on the same LAN. Give the TV a fixed address (a DHCP reservation in the router).
 
@@ -91,6 +94,35 @@ cd ~/.local/share/tv-remote
 
 The launcher and service point at the folder you ran the script from. If you move the checkout, run it
 again. The templates it fills in are in `packaging/`.
+
+### Mirroring one window
+
+<p align="center">
+  <img src="docs/mirroring.svg" alt="A browser window on the PC is sent to the TV over Miracast. Whatever its size, it is scaled to fit the TV's 1920×1080 picture with black bars: a wide window gets bars above and below, a tall one bars at the sides, and a 16:9 window fills the screen." width="760">
+</p>
+
+GNOME Network Displays 0.99 freezes the TV picture and sound when a window you're sharing changes size,
+which includes a video in it going full screen. `tools/build-gnd.sh` builds a copy with
+`tools/gnd-window-resize.patch` applied and installs it to `~/.local/opt/gnd`; **Mirror screen** and
+`tv-remote mirror` then use it instead of the system copy:
+
+```sh
+tools/build-gnd.sh      # needs Docker; builds the installed gnome-network-displays version
+```
+
+It builds in an Ubuntu container matching your release, so no development packages are installed on your
+system. Run it again after `gnome-network-displays` is upgraded. To go back to the system copy, delete
+`~/.local/opt/gnd`.
+
+What the patch changes:
+
+- **The fix:** the PipeWire screen capture no longer drives the stream's clock. That clock stops while the
+  compositor switches the stream to a new window size, and everything timed by it (picture and sound)
+  waited for it forever.
+- Square pixels before the encoder, so a window of any shape is fitted with black bars instead of being
+  stretched, and the encoder isn't restarted on every resize.
+- The capture no longer pauses the whole stream while it waits for a first frame at the new size, and
+  frames are copied out of PipeWire's buffers as they arrive.
 
 **Firewall:** if you use a default-deny firewall, let the TV reach the cast server (`<TV address>` is your
 TV's IP):
@@ -182,6 +214,8 @@ installed on the TV any more".
 | `test_gui.py`, `test_mirror_audio.py` | Tests (the TV and PipeWire are faked; nothing touches the network) |
 | `install.sh`, `packaging/` | Per-user install: launcher, menu entry, icon, audio service templates |
 | `tools/screenshots.py` | Re-renders the screenshots in `docs/` offscreen |
+| `tools/build-gnd.sh`, `tools/gnd-window-resize.patch` | Builds GNOME Network Displays patched for one-window mirroring |
+| `docs/` | README screenshots (`*.png`) and the mirroring diagram (`mirroring.svg`) |
 | `icons/` | Lucide icons used by the windows |
 | `tv-remote.svg` | App icon |
 
@@ -208,6 +242,9 @@ audio, and they use a temporary config.
 - **No volume over DLNA:** the renderer's own volume isn't the TV's real volume, so casting uses the remote's
   VOL keys instead.
 - **Casting needs the remote running:** files stream from this PC, so closing the remote stops casting.
+- **One-window mirroring needs the patched build:** the system GNOME Network Displays freezes when a shared
+  window is resized (see [Mirroring one window](#mirroring-one-window)). Whole-screen mirroring works with
+  either.
 - **One TV:** settings hold a single TV.
 
 ## Privacy and terms
