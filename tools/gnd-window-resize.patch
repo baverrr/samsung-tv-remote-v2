@@ -1,0 +1,82 @@
+diff --git a/src/app/nd-window.c b/src/app/nd-window.c
+index 601f3f6..c791d11 100644
+--- a/src/app/nd-window.c
++++ b/src/app/nd-window.c
+@@ -136,6 +136,12 @@ nd_window_screencast_get_source (NdWindow * self)
+                 "fd", xdp_session_open_pipewire_remote (self->session),
+                 "path", path_str,
+                 "do-timestamp", TRUE,
++                /* Copy each frame out of PipeWire's buffers: the producer has only a few, and a resize
++                 * takes them back while frames downstream still use them, starving or jamming the stream. */
++                "always-copy", TRUE,
++                /* Don't clock the pipeline from the PipeWire stream: that clock stops while a resize is
++                 * renegotiated, and every sink and live source waiting on it (video and audio) hangs. */
++                "provide-clock", FALSE,
+                 NULL);
+ 
+   gst_base_src_set_live (GST_BASE_SRC (src), TRUE);
+@@ -169,6 +175,9 @@ sink_create_source_cb (NdWindow * self, NdSink * sink)
+                 "channel", "nd-inter-video",
+                 "max-lateness", (gint64) - 1,
+                 "sync", FALSE,
++                /* Never re-preroll: a window resize makes pipewiresrc renegotiate, and an async sink
++                 * that loses preroll pauses the whole live pipeline (video and audio) until the next frame. */
++                "async", FALSE,
+                 NULL);
+   gst_bin_add (bin, dst);
+ 
+diff --git a/src/cc/cc-media-factory.c b/src/cc/cc-media-factory.c
+index 21876e6..cba2e7d 100644
+--- a/src/cc/cc-media-factory.c
++++ b/src/cc/cc-media-factory.c
+@@ -82,6 +82,9 @@ cc_media_factory_create_video_element (CcMediaFactory *self)
+                               "framerate", GST_TYPE_FRACTION, 30, 1,
+                               "width", G_TYPE_INT, 1920,
+                               "height", G_TYPE_INT, 1080,
++                              /* Square pixels: videoscale letterboxes a window of any size instead of
++                               * changing the pixel aspect, so a resize never renegotiates the encoder. */
++                              "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
+                               NULL);
+   sinkfilter = gst_element_factory_make ("capsfilter", "cc-sinkfilter");
+   success &= gst_bin_add (bin, sinkfilter);
+diff --git a/src/stream/nd-stream.c b/src/stream/nd-stream.c
+index 709c286..afd0fcf 100644
+--- a/src/stream/nd-stream.c
++++ b/src/stream/nd-stream.c
+@@ -154,6 +154,12 @@ nd_stream_get_source (NdStream *self)
+                 "fd", xdp_session_open_pipewire_remote (self->session),
+                 "path", path_str,
+                 "do-timestamp", TRUE,
++                /* Copy each frame out of PipeWire's buffers: the producer has only a few, and a resize
++                 * takes them back while frames downstream still use them, starving or jamming the stream. */
++                "always-copy", TRUE,
++                /* Don't clock the pipeline from the PipeWire stream: that clock stops while a resize is
++                 * renegotiated, and every sink and live source waiting on it (video and audio) hangs. */
++                "provide-clock", FALSE,
+                 NULL);
+   g_free (uuid);
+ 
+@@ -197,6 +203,9 @@ sink_create_source_cb (NdStream * self, NdSink * sink)
+                 "channel", "nd-inter-video",
+                 "max-lateness", (gint64) - 1,
+                 "sync", FALSE,
++                /* Never re-preroll: a window resize makes pipewiresrc renegotiate, and an async sink
++                 * that loses preroll pauses the whole live pipeline (video and audio) until the next frame. */
++                "async", FALSE,
+                 NULL);
+   gst_bin_add (bin, dst);
+ 
+diff --git a/src/wfd/wfd-media-factory.c b/src/wfd/wfd-media-factory.c
+index c58a31b..cab10ca 100644
+--- a/src/wfd/wfd-media-factory.c
++++ b/src/wfd/wfd-media-factory.c
+@@ -154,6 +154,9 @@ wfd_media_factory_create_video_element (WfdMediaFactory *self, GstBin *bin)
+                               "framerate", GST_TYPE_FRACTION, 30, 1,
+                               "width", G_TYPE_INT, 1920,
+                               "height", G_TYPE_INT, 1080,
++                              /* Square pixels: videoscale letterboxes a window of any size instead of
++                               * changing the pixel aspect, so a resize never renegotiates the encoder. */
++                              "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
+                               NULL);
+   sinkfilter = gst_element_factory_make ("capsfilter", "wfd-sinkfilter");
+   success &= gst_bin_add (bin, sinkfilter);
