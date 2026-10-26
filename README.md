@@ -123,6 +123,7 @@ What the patch changes:
   stretched, and the encoder isn't restarted on every resize.
 - The capture no longer pauses the whole stream while it waits for a first frame at the new size, and
   frames are copied out of PipeWire's buffers as they arrive.
+- A crash when GNOME Network Displays closes (`free(): invalid pointer`) is fixed.
 
 **Firewall:** if you use a default-deny firewall, let the TV reach the cast server (`<TV address>` is your
 TV's IP):
@@ -130,6 +131,15 @@ TV's IP):
 ```sh
 sudo ufw allow from <TV address> to any port 8199 proto tcp
 ```
+
+### Updating
+
+```sh
+git -C ~/.local/share/tv-remote pull
+```
+
+Close and reopen the remote afterwards (launching it again only brings the open window forward). If
+`gnome-network-displays` was upgraded, also run `tools/build-gnd.sh` from the checkout again.
 
 ## Setup
 
@@ -202,6 +212,24 @@ tv-remote mirror                    # start screen mirroring
 
 Errors come back as one line saying what failed, e.g. "Couldn't reach the TV at …" or "Netflix isn't
 installed on the TV any more".
+
+### Mirroring tips
+
+- **Whole screen or one window:** the screen-sharing prompt (KDE's or GNOME's) decides what the TV shows.
+  Pick a screen to mirror everything, or a window (e.g. your browser) to show only that. A shared window
+  keeps streaming while it's covered by other windows or minimized.
+- **"Error" when connecting:** the TV may still be holding a previous mirroring session. Press **Home** on
+  the TV (or switch source), then pick it again; restarting the TV clears a stuck Wi-Fi Direct session.
+  Several TVs can show up in the list, so check you picked the right one.
+- **Choppy picture:** Wi-Fi power saving on this PC's Wi-Fi card makes the radio doze, and the TV link
+  shares that radio. To turn it off for good with NetworkManager:
+
+  ```sh
+  printf '[connection]\nwifi.powersave = 2\n' | sudo tee /etc/NetworkManager/conf.d/zz-wifi-powersave-off.conf
+  sudo nmcli general reload conf
+  ```
+
+  It applies the next time Wi-Fi reconnects. To undo, delete that file and reload again.
 
 ## Project layout
 
