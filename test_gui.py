@@ -573,8 +573,9 @@ def test_broken_config_is_reported(config):
 
 
 @pytest.fixture
-def media_server():
+def media_server(monkeypatch):
     import cast
+    monkeypatch.setattr(cast, "PORT", 0)  # any free port: a running remote may be casting on the real one
     s = cast.MediaServer("127.0.0.1")  # "the TV" is this machine, so the test client is allowed
     yield s
     s.close()
