@@ -224,8 +224,18 @@ installed on the TV any more".
 - **"Error" when connecting:** the TV may still be holding a previous mirroring session. Press **Home** on
   the TV (or switch source), then pick it again; restarting the TV clears a stuck Wi-Fi Direct session.
   Several TVs can show up in the list, so check you picked the right one.
-- **Choppy picture:** Wi-Fi power saving on this PC's Wi-Fi card makes the radio doze, and the TV link
-  shares that radio. To turn it off for good with NetworkManager:
+- **Choppy picture:** first check the signal to the TV. The PC talks to the TV directly, not through your
+  router, so a weak signal (worse than about -70 dBm) makes the picture freeze now and then, and the TV may
+  drop the connection. While mirroring:
+
+  ```sh
+  for i in $(iw dev | awk '/Interface p2p-/{print $2}'); do iw dev "$i" station dump | grep 'signal:'; done
+  ```
+
+  Around -60 dBm is good. If it's weaker, move the PC closer to the TV or out from behind things in the way.
+
+  Wi-Fi power saving on this PC's Wi-Fi card also makes the radio doze, and the TV link shares that radio.
+  To turn it off for good with NetworkManager:
 
   ```sh
   printf '[connection]\nwifi.powersave = 2\n' | sudo tee /etc/NetworkManager/conf.d/zz-wifi-powersave-off.conf
