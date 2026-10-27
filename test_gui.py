@@ -1361,6 +1361,114 @@ def test_cli_on(monkeypatch, capsys, woke, out):
     assert capsys.readouterr().out.startswith(out)
 
 
+WIFI_HOST, WIFI_MAC, TV_ID = "192.0.2.78", "00:00:5e:00:53:78", "uuid:test-tv"
+
+
+def tv_reply(network="wired", tv_id=TV_ID, state="on"):
+    return {"device": {"id": tv_id, "wifiMac": WIFI_MAC.upper(), "networkType": network, "PowerState": state}}
+
+
+def test_power_state_saves_what_finds_the_tv_again(monkeypatch, config):
+    monkeypatch.setattr(core.TV, "info", lambda self, host=None: tv_reply("wireless"))
+    tv = core.TV(core.load_config())
+    assert tv.power_state() == "on"
+    saved = json.loads(config.read_text())
+    assert (saved["tv_id"], saved["wifi_mac"], saved["wifi_host"], saved["host"]) == (TV_ID, WIFI_MAC, HOST, HOST)
+
+
+def test_tv_off_the_wired_address_is_found_at_its_saved_wifi_one(monkeypatch, config):
+    config.write_text(json.dumps({"host": HOST, "mac": MAC, "tv_id": TV_ID, "wifi_host": WIFI_HOST}))
+    asked = []
+
+    def info(self, host=None):
+        asked.append(host or self.host)
+        if (host or self.host) != WIFI_HOST:
+            raise OSError("no route to host")
+        return tv_reply("wireless")
+    monkeypatch.setattr(core.TV, "info", info)
+    monkeypatch.setattr(core.socket, "create_connection", lambda *a, **k: pytest.fail("no search needed"))
+    tv = core.TV(core.load_config())
+    assert tv.power_state() == "on" and tv.host == WIFI_HOST and tv.unreachable is None
+    assert tv.power_state() == "on" and asked == [HOST, WIFI_HOST, WIFI_HOST]  # stays there
+    assert tv.cfg["host"] == HOST  # the wired address is kept for when the cable's back
+
+
+def test_lan_search_finds_only_this_tv_and_not_too_often(monkeypatch, config):
+    config.write_text(json.dumps({"host": HOST, "mac": MAC, "tv_id": TV_ID}))
+    other, moved = "192.0.2.20", "192.0.2.99"
+    replies = {other: tv_reply("wireless", tv_id="uuid:another-tv"), moved: tv_reply("wireless")}
+    listening = {other}
+
+    def info(self, host=None):
+        host = host or self.host
+        if host not in listening:
+            raise OSError("no route to host")
+        return replies[host]
+
+    def connect(addr, timeout):
+        if addr[0] not in listening:
+            raise OSError("refused")
+        return io.BytesIO()
+    monkeypatch.setattr(core.TV, "info", info)
+    monkeypatch.setattr(core.socket, "create_connection", connect)
+    clock = [1000.0]
+    monkeypatch.setattr(core.time, "monotonic", lambda: clock[0])
+    tv = core.TV(core.load_config())
+    assert tv.power_state() == "off" and tv.host == HOST  # another TV on the LAN isn't taken for this one
+    listening.add(moved)
+    assert tv.power_state() == "off"  # searched moments ago
+    clock[0] += core.SEARCH_EVERY
+    assert tv.power_state() == "on" and tv.host == moved
+    assert json.loads(config.read_text())["wifi_host"] == moved
+
+
+def test_no_search_before_the_tv_was_ever_reached(monkeypatch):
+    monkeypatch.setattr(core.TV, "info", lambda *a, **k: (_ for _ in ()).throw(OSError("no route to host")))
+    monkeypatch.setattr(core.socket, "create_connection", lambda *a, **k: pytest.fail("searched for an unknown TV"))
+    assert core.TV(core.load_config()).power_state() == "off"
+
+
+def test_connect_follows_a_tv_that_moved(monkeypatch, config):
+    config.write_text(json.dumps({"host": HOST, "mac": MAC, "tv_id": TV_ID, "wifi_host": WIFI_HOST}))
+    tried = []
+
+    def connect(self):
+        tried.append(self.host)
+        if self.host == HOST:
+            raise ConnectionRefusedError("refused")
+        return "ws"
+    monkeypatch.setattr(core.TV, "_connect", connect)
+    monkeypatch.setattr(core.TV, "info", lambda self, host=None: tv_reply("wireless"))
+    tv = core.TV(core.load_config())
+    assert tv.connect() == "ws" and tried == [HOST, WIFI_HOST]
+
+
+def test_wake_sends_to_the_wifi_mac_too(monkeypatch, config):
+    config.write_text(json.dumps({"host": HOST, "mac": MAC, "wifi_mac": WIFI_MAC}))
+    sent_to = []
+
+    class Sock:
+        def __init__(self, *args):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def setsockopt(self, *args):
+            pass
+
+        def sendto(self, data, addr):
+            sent_to.append(data[6:12])
+
+    monkeypatch.setattr(core.socket, "socket", Sock)
+    core.TV(core.load_config()).wake()
+    macs = [bytes.fromhex(m.replace(":", "")) for m in (MAC, WIFI_MAC)]
+    assert sent_to == macs * 3
+
+
 def test_wake_sends_a_magic_packet_to_the_lan_broadcast(monkeypatch):
     sent_to = []
 

@@ -908,7 +908,7 @@ class RemoteWindow(QWidget):
                     self.tv.connect()
                     self.post("apps", self.tv.scan_apps())
                 else:
-                    self.post("error", core.WAKE_FAILED.format(host=self.cfg["host"]))
+                    self.post("error", core.WAKE_FAILED.format(host=self.tv.host))
         self.run(go, "Couldn't change the power")
 
     def startup(self):
@@ -946,7 +946,7 @@ class RemoteWindow(QWidget):
     def get_caster(self):
         """The Caster, created on first use (GUI thread only) with the cast window's slideshow settings."""
         if self.caster is None:
-            self.caster = cast.Caster(self.cfg["host"], lambda text: self.post("cast", text),
+            self.caster = cast.Caster(self.tv.host, lambda text: self.post("cast", text),
                                       lambda busy: self.post("cast_busy", busy))
             if self.cast_window:
                 self.cast_window.apply_slideshow()
@@ -977,7 +977,7 @@ class RemoteWindow(QWidget):
     def on_event(self, event, data):
         if event == "connected":
             self.turned_off = False
-            self.set_status(f"Connected · {self.cfg['host']}", "ok")
+            self.set_status(f"Connected · {self.tv.host}", "ok")
             if self.apps_note == APPS_WHEN_ON:  # never scanned while the TV was on (e.g. turned on by hand)
                 self.run(lambda: self.cfg["apps"] or self.post("apps", self.tv.scan_apps()), "Couldn't load the apps")
         elif event == "disconnected" and self.turned_off:
@@ -986,7 +986,7 @@ class RemoteWindow(QWidget):
             self.turned_off = event == "off_done"
             self.set_status(*STATUS_EVENTS[event])
             if event == "off" and data:
-                self.status_text.setToolTip(f"No answer from {self.cfg['host']}: {data}")
+                self.status_text.setToolTip(f"No answer from {self.tv.host}: {data}")
             if event == "off" and not self.cfg["apps"]:
                 self.build_apps(APPS_WHEN_ON)
         elif event == "apps":

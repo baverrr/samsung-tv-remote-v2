@@ -93,6 +93,9 @@ class PairingRefused(RuntimeError):
 # without closing it. Without this, sends would vanish into the kernel buffer while "Connected" showed.
 PING_S = 10
 TURN_OFF_FAILED = "Sent the power key twice, but the TV still reports it's on"
+# A TV that doesn't answer at its address is looked for on the LAN at most this often (seconds), so a TV
+# that's really off doesn't cost a search on every check.
+SEARCH_EVERY = 30
 WAKE_FAILED = ("Sent the wake packet, but the TV didn't answer at {host}. If it's off, turn on Settings › General › "
                "Network › Expert Settings › Power On with Mobile; if it's on, check its address in the config.")
 
@@ -199,29 +202,110 @@ class TV:
         self.cfg = cfg
         self.on_event = on_event
         self.ws = None
+        self.host = cfg["host"]  # where the TV is now: the configured (wired) address, or where locate() found it
+        self.searched = 0.0  # when locate() last searched the LAN
         self.unreachable = None  # why the last power_state() couldn't reach the TV
         self.apps_from_cache = False  # the last scan_apps() got no answers and returned the saved list
         self.lock = threading.Lock()
 
-    def info(self):
-        with urllib.request.urlopen(f"http://{self.cfg['host']}:8001/api/v2/", timeout=2) as r:
+    def info(self, host=None):
+        with urllib.request.urlopen(f"http://{host or self.host}:8001/api/v2/", timeout=2) as r:
             return json.load(r)
 
     def power_state(self):
         """'on', 'standby' (network standby, screen off) or 'off' (unreachable: fully off, or a network
-        problem; the reason is kept in self.unreachable). A TV that answers without PowerState counts as 'on'."""
+        problem; the reason is kept in self.unreachable). A TV that answers without PowerState counts as 'on'.
+        A TV that doesn't answer at self.host is looked for elsewhere (locate()), e.g. on Wi-Fi once its
+        cable is out."""
         try:
             info = self.info()
         except (OSError, ValueError) as e:  # unreachable, timed out, or not JSON
             self.unreachable = describe_error(e)
-            return "off"
+            info = self.locate()
+            if info is None:
+                return "off"
         self.unreachable = None
+        device = self._remember(info)
+        return device.get("PowerState", "on")
+
+    def _is_this_tv(self, info):
         device = info.get("device") if isinstance(info, dict) else None
-        return (device if isinstance(device, dict) else {}).get("PowerState", "on")
+        if not isinstance(device, dict):
+            return False
+        if self.cfg.get("tv_id"):
+            return device.get("id") == self.cfg["tv_id"]
+        return bool(self.cfg.get("wifi_mac")) and str(device.get("wifiMac", "")).lower() == self.cfg["wifi_mac"].lower()
+
+    def locate(self):
+        """The TV's info from wherever it answers now, with self.host moved there; None if it's nowhere.
+        Tries its other saved address (wired "host", last Wi-Fi "wifi_host"), then, at most every
+        SEARCH_EVERY s, every address on the LAN for a TV with its id. Needs the id (or Wi-Fi MAC) saved
+        by an earlier contact, so it never picks up some other TV."""
+        if not (self.cfg.get("tv_id") or self.cfg.get("wifi_mac")):
+            return None
+        tried = {self.host}
+        for host in (self.cfg["host"], self.cfg.get("wifi_host")):
+            if isinstance(host, str) and host and host not in tried:
+                tried.add(host)
+                if found := self._try(host):
+                    return found
+        if time.monotonic() - self.searched < SEARCH_EVERY:
+            return None
+        self.searched = time.monotonic()
+        prefix = self.cfg["host"].rsplit(".", 1)[0]  # assumes an IPv4 host on a /24 LAN, as wake() does
+        hosts = [h for i in range(1, 255) if (h := f"{prefix}.{i}") not in tried]
+
+        def listening(host):
+            try:
+                socket.create_connection((host, 8001), timeout=0.4).close()
+                return True
+            except OSError:
+                return False
+
+        with ThreadPoolExecutor(64) as ex:
+            open_hosts = [h for h, ok in zip(hosts, ex.map(listening, hosts), strict=True) if ok]
+        return next((found for h in open_hosts if (found := self._try(h))), None)
+
+    def _try(self, host):
+        try:
+            info = self.info(host)
+        except (OSError, ValueError):
+            return None
+        if not self._is_this_tv(info):
+            return None
+        self.host = host
+        return info
+
+    def _remember(self, info):
+        """The device part of a reply, after saving what locate() needs to find this TV again: its id,
+        Wi-Fi MAC (for wake() too) and, while it's on Wi-Fi, that address."""
+        device = info.get("device") if isinstance(info, dict) else None
+        if not isinstance(device, dict):
+            return {}
+        seen = {"tv_id": device.get("id"), "wifi_mac": str(device.get("wifiMac") or "").lower() or None}
+        if device.get("networkType") == "wireless":
+            seen["wifi_host"] = self.host
+        seen = {k: v for k, v in seen.items() if isinstance(v, str) and v and self.cfg.get(k) != v}
+        if seen:
+            self.cfg.update(seen)
+            try:
+                save_config(self.cfg)
+            except OSError:
+                pass  # only a shortcut for next time
+        return device
 
     def connect(self):
+        try:
+            return self._connect()
+        except OSError:  # the TV may have moved, e.g. to Wi-Fi: reconnect wherever it answers now
+            old = self.host
+            if self.locate() is None or self.host == old:
+                raise
+            return self._connect()
+
+    def _connect(self):
         name = base64.b64encode(self.cfg["name"].encode()).decode()
-        url = f"wss://{self.cfg['host']}:8002/api/v2/channels/samsung.remote.control?name={name}"
+        url = f"wss://{self.host}:8002/api/v2/channels/samsung.remote.control?name={name}"
         if self.cfg.get("token"):
             url += f"&token={self.cfg['token']}"
         else:
@@ -311,7 +395,7 @@ class TV:
         self._send({"method": "ms.remote.control", "params": {"TypeOfRemote": "SendInputEnd"}})
 
     def _app_url(self, app_id):
-        return f"http://{self.cfg['host']}:8001/api/v2/applications/{app_id}"
+        return f"http://{self.host}:8001/api/v2/applications/{app_id}"
 
     def probe_app(self, app_id):
         """{"appId", "name"} if the TV has this app, None if it says it doesn't (404). Other failures raise."""
@@ -371,20 +455,24 @@ class TV:
             raise
 
     def wake(self):
-        text = self.cfg.get("mac") or UNSET_MAC
-        try:
-            mac = bytes.fromhex(text.replace(":", "").replace("-", ""))
-        except (ValueError, AttributeError):
-            mac = b""
-        if text == UNSET_MAC or len(mac) != 6:
+        """Magic packets for the configured MAC and the Wi-Fi one the TV reported, so it wakes on either."""
+        macs = []
+        for text in (self.cfg.get("mac"), self.cfg.get("wifi_mac")):
+            try:
+                mac = bytes.fromhex(text.replace(":", "").replace("-", ""))
+            except (ValueError, AttributeError):
+                continue
+            if text != UNSET_MAC and len(mac) == 6 and mac not in macs:
+                macs.append(mac)
+        if not macs:
             raise RuntimeError(f'To turn the TV on, put its MAC address in {CONFIG} ("mac": "aa:bb:cc:dd:ee:ff"); '
                                "your router's list of connected devices shows it")
-        packet = b"\xff" * 6 + mac * 16
         broadcast = self.cfg["host"].rsplit(".", 1)[0] + ".255"  # assumes an IPv4 host on a /24 LAN
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             for _ in range(3):
-                s.sendto(packet, (broadcast, 9))
+                for mac in macs:
+                    s.sendto(b"\xff" * 6 + mac * 16, (broadcast, 9))
 
     def wait_until_on(self, timeout=25):
         end = time.time() + timeout
@@ -451,9 +539,9 @@ def cli(args):
     try:
         run_command(tv, cfg, args[0], args[1:])
     except urllib.error.HTTPError as e:  # an OSError too, but the TV did answer
-        sys.exit(f"The TV at {cfg['host']} refused the request: {describe_error(e)}")
+        sys.exit(f"The TV at {tv.host} refused the request: {describe_error(e)}")
     except (OSError, websocket.WebSocketException) as e:  # TV off or off the network: one line, not a traceback
-        sys.exit(f"Couldn't reach the TV at {cfg['host']}: {describe_error(e)}")
+        sys.exit(f"Couldn't reach the TV at {tv.host}: {describe_error(e)}")
     except (RuntimeError, ValueError) as e:  # reached it, but it failed (pairing refused, nothing to cast, ...)
         sys.exit(str(e))
     time.sleep(0.2)  # let the last frame flush before closing
@@ -468,7 +556,7 @@ def run_command(tv, cfg, cmd, rest):
     elif cmd == "apps":
         apps = tv.scan_apps()
         if tv.apps_from_cache:
-            print(f"The TV didn't answer at {cfg['host']}; showing the saved list.", file=sys.stderr)
+            print(f"The TV didn't answer at {tv.host}; showing the saved list.", file=sys.stderr)
         favorites = {a["appId"] for k in cfg["favorites"] if (a := installed_app(cfg, k))}
         for a in sorted(apps, key=lambda a: a["name"].lower()):
             print(f"{'★' if a['appId'] in favorites else ' '} {a['name']:<28} {a['appId']}")
@@ -481,7 +569,7 @@ def run_command(tv, cfg, cmd, rest):
         tv.text(" ".join(rest))
     elif cmd == "on":
         tv.wake()
-        print("TV is on" if tv.wait_until_on() else WAKE_FAILED.format(host=cfg["host"]))
+        print("TV is on" if tv.wait_until_on() else WAKE_FAILED.format(host=tv.host))
     elif cmd == "off":
         state = tv.power_state()
         if state == "on":
@@ -489,7 +577,7 @@ def run_command(tv, cfg, cmd, rest):
         elif state == "standby":
             print("TV is already in standby")
         else:
-            print(f"TV didn't answer at {cfg['host']} ({tv.unreachable}); it may already be off")
+            print(f"TV didn't answer at {tv.host} ({tv.unreachable}); it may already be off")
     elif cmd == "info":
         print(json.dumps(tv.info()["device"], indent=2))
     elif cmd == "mirror":
@@ -503,7 +591,7 @@ def run_command(tv, cfg, cmd, rest):
             if caster.current is None:  # every way a queue ends (finished, stopped, unplayable) clears it
                 done.set()
 
-        caster = cast.Caster(cfg["host"], on_status)
+        caster = cast.Caster(tv.host, on_status)
         try:
             caster.cast(rest)
             try:

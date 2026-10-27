@@ -163,6 +163,12 @@ pairing token and the app list to it, and saves it readable only by you:
 
 Until `host` is set, the remote says so instead of starting.
 
+**If the TV moves to Wi-Fi** (its cable is out, or it was switched over), the remote finds it there by
+itself. Once it has reached the TV, it saves the TV's ID (`tv_id`), Wi-Fi MAC (`wifi_mac`) and Wi-Fi
+address (`wifi_host`). When the TV doesn't answer at `host`, it tries `wifi_host`. If that fails too, it
+checks every address on the LAN for a TV with that ID, at most every 30 seconds. `host` stays your wired
+address, so the remote goes back to it when the cable is back in. Power-on sends the wake packet to both MACs.
+
 On the first connection the TV asks to **Allow** the remote. If you denied it, allow it under
 Settings › General › External Device Manager › Device Connection Manager.
 
