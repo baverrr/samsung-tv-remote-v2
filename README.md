@@ -123,6 +123,9 @@ What the patch changes:
   stretched, and the encoder isn't restarted on every resize.
 - The capture no longer pauses the whole stream while it waits for a first frame at the new size, and
   frames are copied out of PipeWire's buffers as they arrive.
+- A keyframe (a full picture) every second. The stock build sends one only every 10 seconds when the TV
+  says it can ask for one, so after a few packets are lost on Wi-Fi the picture can stay frozen or smeared
+  for several seconds; now it recovers within a second.
 - A crash when GNOME Network Displays closes (`free(): invalid pointer`) is fixed.
 
 **Firewall:** if you use a default-deny firewall, let the TV reach the cast server (`<TV address>` is your
@@ -230,6 +233,17 @@ installed on the TV any more".
   ```
 
   It applies the next time Wi-Fi reconnects. To undo, delete that file and reload again.
+
+  Some Wi-Fi drivers have power saving of their own that this doesn't reach. Realtek cards on the `rtw89`
+  driver (e.g. the RTL8852BE) stall for a moment now and then, which shows as a freeze on the TV, and log
+  `timed out to flush queues` (`journalctl -k`). To turn their power saving off:
+
+  ```sh
+  printf 'options rtw89_core disable_ps_mode=y\noptions rtw89_pci disable_aspm_l1=y disable_aspm_l1ss=y disable_clkreq=y\n' | sudo tee /etc/modprobe.d/rtw89-no-powersave.conf
+  ```
+
+  It applies after a reboot. To undo, delete that file and reboot. The [patched build](#mirroring-one-window)
+  also gets the picture back within a second after a stall, instead of up to 10.
 
 ## Project layout
 

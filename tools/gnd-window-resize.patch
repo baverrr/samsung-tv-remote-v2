@@ -102,7 +102,7 @@ index 709c286..afd0fcf 100644
    gst_bin_add (bin, dst);
  
 diff --git a/src/wfd/wfd-media-factory.c b/src/wfd/wfd-media-factory.c
-index c58a31b..cab10ca 100644
+index c58a31b..da1727d 100644
 --- a/src/wfd/wfd-media-factory.c
 +++ b/src/wfd/wfd-media-factory.c
 @@ -154,6 +154,9 @@ wfd_media_factory_create_video_element (WfdMediaFactory *self, GstBin *bin)
@@ -115,3 +115,18 @@ index c58a31b..cab10ca 100644
                                NULL);
    sinkfilter = gst_element_factory_make ("capsfilter", "wfd-sinkfilter");
    success &= gst_bin_add (bin, sinkfilter);
+@@ -547,11 +550,9 @@ wfd_configure_media_element (GstBin *bin, WfdParams *params)
+       quirks |= WFD_QUIRK_NO_KEEPALIVE;
+     }
+ 
+-  /* Decrease the number of keyframes if the device is able to request
+-   * IDRs by itself.
+-   * Note that VAAPI H264 appears to run into an assertion error in version 1.14.4 */
+-  if (params->idr_request_capability && !(quirks & WFD_QUIRK_NO_IDR))
+-    gop_size = 10 * resolution->refresh_rate;
++  /* Keep a keyframe every second even when the sink says it can request IDRs: the stream is RTP
++   * over Wi-Fi with no recovery, and a sink that is slow to ask for one (or never does) shows a
++   * frozen or smeared picture after lost packets until the next keyframe, up to 10 s later. */
+ 
+   srcfilter = gst_bin_get_by_name (bin, "srcfilter");
+   if (srcfilter != NULL)
