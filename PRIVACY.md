@@ -3,7 +3,7 @@
 **Samsung TV Remote** · Effective 31 October 2026
 
 Samsung TV Remote ("the app") is a desktop program that runs entirely on your own computer
-and talks only to the Samsung TV, and to remotes you set up yourself, on your local network.
+and talks only to the Samsung TV and Apple TV, and to remotes you set up yourself, on your local network.
 It has no accounts, no online servers, no analytics and no advertising. The author never receives any information about you or your use
 of the app.
 
@@ -19,7 +19,7 @@ They're readable only by your user account:
 
 | File | What's in it |
 |---|---|
-| `~/.config/tv-remote/config.json` | Your TV's network address and MAC address, the name the app pairs as, the **pairing token** the TV issued, your app-button choices and the list of apps found on the TV, and, if you use the ESP32 bridge, its **bridge token** and the addresses allowed to use it. |
+| `~/.config/tv-remote/config.json` | Your TV's network address and MAC address, the name the app pairs as, the **pairing token** the TV issued, your app-button choices and the list of apps found on the TV, and, if you use the ESP32 bridge, its **bridge token** and the addresses allowed to use it. If you pair an Apple TV, also its name, identifier and last network address, the **pairing credentials** for its Companion and AirPlay protocols, and its app list and your app buttons. |
 | `~/.config/tv-remote/mirror-audio.json` | The apps and sound roles that should stay on your own speakers or headset while mirroring (e.g. Discord, Zoom). |
 | `~/.local/state/tv-mirror-audio.json` | Which sound output to switch back to when mirroring stops. |
 | A temporary folder (`/tmp/tv-cast-*`) | JPEG copies of photos converted for casting. It's deleted when you stop casting or close the app. |
@@ -44,12 +44,16 @@ Everything stays on your local network, between your computer and your TV:
   keys from devices on your network that send the bridge token. The token and the commands
   travel as plain HTTP, so anyone able to watch your local network could see them. The bridge
   logs each request (the device's address and what it asked for) to your user journal.
+- **Apple TV (only if you pair one):** the app finds the box with multicast DNS (Bonjour) on your
+  local network, and talks to it over the encrypted Companion and AirPlay protocols (keys, text, apps,
+  power, what's playing and its artwork). Casting to it works as above: the box fetches the file from
+  port 8199 and plays it over AirPlay.
 - **Screen mirroring:** handled by GNOME Network Displays, which sends your screen and sound to
   the TV over Wi-Fi Direct (Miracast). While a session is streaming, the app's audio helper
   reads the names of programs playing sound (from PipeWire and `/proc`) to decide which ones to
   send to the TV. That information never leaves your computer.
 
-Your TV, and Samsung's services on it, have their own privacy practices. The app doesn't
+Your TV and Apple TV, and Samsung's and Apple's services on them, have their own privacy practices. The app doesn't
 control what the TV does with the commands, app list or media it receives.
 
 ## Children

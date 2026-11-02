@@ -1,10 +1,12 @@
 """HTTP bridge for devices that can't speak the TV's WebSocket API, e.g. an ESP32 touch screen running
-ESPHome: `tv-remote serve` listens on the LAN and runs each request through tv_remote.TV, so the device
-gets the same pairing token, Wi-Fi fallback, app list and confirmed power-off as the desktop remote.
+ESPHome: `tv-remote serve` listens on the LAN and runs each request through the remote's client for the
+device in use (tv_remote.TV, or appletv.AppleTV with --device appletv), so the device gets the same pairing,
+Wi-Fi fallback, app list and confirmed power-off as the desktop remote.
 
-  POST /key/<key>        a remote key: KEY_VOLUP or volup
-  POST /launch/<app>     an app key (netflix) or the TV's name for an installed app (URL-encoded)
-  POST /power/on         Wake-on-LAN; answers at once (202), the TV takes a few seconds
+  POST /key/<key>        a remote key: KEY_VOLUP or volup (an Apple TV also takes select, play_pause, ...)
+  POST /launch/<app>     an app key (netflix, or an Apple TV bundle ID) or the TV's name for an installed
+                         app (URL-encoded)
+  POST /power/on         Wake-on-LAN (an Apple TV: power on over Companion); answers at once (202)
   POST /power/off        KEY_POWER until the TV reports standby, in the background (202)
   GET  /status           {"power": "on" | "standby" | "off"}
 
@@ -42,11 +44,11 @@ def ensure_token(cfg):
 
 
 def find_launchable(tv, name):
-    """An installed app by key (netflix, id:<appId>) or by the TV's name for it, or None."""
+    """An installed app by key (netflix, id:<appId>, an Apple TV bundle ID) or by the TV's name for it, or None."""
     cfg = tv.cfg
-    if name in core.CATALOG_BY_KEY or name.startswith(core.CUSTOM):
+    if tv.kind == "samsung" and (name in core.CATALOG_BY_KEY or name.startswith(core.CUSTOM)):
         return core.installed_app(cfg, name)
-    return core.find_app(cfg["apps"] or tv.scan_apps(), name)
+    return core.installed_app(cfg, name) or core.find_app(cfg["apps"] or tv.scan_apps(), name)
 
 
 class HTTPError(Exception):
@@ -60,7 +62,7 @@ class Bridge(ThreadingHTTPServer):
 
     def __init__(self, tv, address):
         self.tv = tv
-        self.token = ensure_token(tv.cfg)
+        self.token = ensure_token(tv.root)
         self.turning_off = threading.Lock()  # held while a power-off runs, so repeated presses don't stack
         super().__init__(address, Handler)
 
@@ -100,7 +102,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _check_client(self):
-        clients = self.bridge.tv.cfg.get("bridge_clients")
+        clients = self.bridge.tv.root.get("bridge_clients")
         if clients and self.client_address[0] not in clients:
             raise HTTPError(403, "This address isn't in bridge_clients")
         expected = f"Bearer {self.bridge.token}".encode()
@@ -113,7 +115,10 @@ class Handler(BaseHTTPRequestHandler):
             case "POST", ["key", key]:
                 if not KEY_RE.fullmatch(key):
                     raise HTTPError(400, f"{key!r} isn't a key name")
-                key = key if key.startswith("KEY_") else "KEY_" + key.upper()
+                try:
+                    key = tv.resolve_key(key)
+                except ValueError as e:  # a key the Apple TV doesn't have
+                    raise HTTPError(400, str(e)) from None
                 tv.key(key)
                 return 200, {"ok": True, "key": key}
             case "POST", ["launch", name]:
@@ -150,11 +155,11 @@ class Handler(BaseHTTPRequestHandler):
 def serve(tv, args):
     """tv-remote serve [--token] [port]: run the bridge until stopped, or print the token."""
     if "--token" in args:
-        print(ensure_token(tv.cfg))
+        print(ensure_token(tv.root))
         return
     ports = [a for a in args if a.isdigit()]
     port = int(ports[0]) if ports else PORT
-    listen = tv.cfg.get("bridge_listen") or "0.0.0.0"
+    listen = tv.root.get("bridge_listen") or "0.0.0.0"
     try:
         server = Bridge(tv, (listen, port))
     except OSError as e:  # not the TV's fault, so not cli()'s "Couldn't reach the TV"

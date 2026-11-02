@@ -44,7 +44,22 @@ fi
 
 echo "venv: $APP_DIR/venv"
 [ -x "$APP_DIR/venv/bin/python" ] || python3 -m venv --system-site-packages "$APP_DIR/venv"
-"$APP_DIR/venv/bin/pip" install --quiet websocket-client
+# pyatv: the Apple TV remote (Companion, AirPlay and MRP protocols). srptools 2 made an argument pyatv
+# 0.18 passes keyword-only, which breaks pairing, so it stays on 1.x.
+"$APP_DIR/venv/bin/pip" install --quiet websocket-client "pyatv==0.18.0" "srptools==1.0.1" "biplist==1.0.3"
+# AirPlay casting to tvOS 26+ needs an unreleased pyatv fix (see the patch's header). Applied once:
+# a reverse dry run that succeeds means it's already in.
+SITE=$("$APP_DIR/venv/bin/python" -c "import os, pyatv; print(os.path.dirname(os.path.dirname(pyatv.__file__)))")
+if patch -p1 -R -s -f --dry-run -d "$SITE" < "$APP_DIR/tools/pyatv-airplay.patch" >/dev/null 2>&1; then
+    :
+elif ! command -v patch >/dev/null; then
+    echo "Note: 'patch' is missing (sudo apt install patch), so AirPlay casting to an Apple TV stays off." >&2
+elif patch -p1 -N -s -f --dry-run -d "$SITE" < "$APP_DIR/tools/pyatv-airplay.patch" >/dev/null 2>&1 &&
+     patch -p1 -N -s -d "$SITE" < "$APP_DIR/tools/pyatv-airplay.patch"; then  # all or nothing
+    echo "pyatv: patched for AirPlay casting ($SITE/pyatv)"
+else
+    echo "Note: tools/pyatv-airplay.patch didn't apply, so AirPlay casting to an Apple TV stays off." >&2
+fi
 
 echo "launcher: $BIN_DIR/tv-remote"
 fill "$APP_DIR/packaging/tv-remote.in" "$BIN_DIR/tv-remote"

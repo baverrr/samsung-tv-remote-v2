@@ -1,4 +1,5 @@
-"""Cast local photos, videos and music to the TV's DLNA renderer (UPnP AVTransport).
+"""Cast local photos, videos and music to the TV's DLNA renderer (UPnP AVTransport), or, with
+appletv.AirPlayRenderer, videos and music to an Apple TV over AirPlay.
 
 A small HTTP server on this machine serves the file that's playing under an unguessable URL, to the
 TV's address only; the TV is told to fetch and play it. A file's URL stops working once the queue moves
@@ -238,6 +239,8 @@ class Renderer:
     DLNA renderer's own level (it read 0 and ignored KEY_VOLUP while the speakers played fine), not the
     TV's real volume, so volume goes through the websocket VOL keys instead."""
 
+    kinds = frozenset({"image", "video", "audio"})  # what it can show (an AirPlay renderer: no photos)
+
     def __init__(self, tv_host):
         self.url = f"http://{tv_host}:{DMR_PORT}/upnp/control/AVTransport1"
 
@@ -302,10 +305,11 @@ class Caster:
     """Plays a queue of files on the TV: videos/music advance when they finish, photos on a timer when
     slideshow is on."""
 
-    def __init__(self, tv_host, on_status=lambda text: None, on_busy=lambda busy: None):
+    def __init__(self, tv_host, on_status=lambda text: None, on_busy=lambda busy: None, renderer=None):
         self.host = tv_host
         self.server = None
-        self.tv = Renderer(tv_host)
+        self.tv = renderer or Renderer(tv_host)  # anything with Renderer's methods and kinds
+        self.kinds = self.tv.kinds  # what it can show: an AirPlay renderer can't show photos
         self.on_status = on_status
         self.on_busy = on_busy  # True while files are being found, converted or loaded on the TV
         self.queue, self.index = [], -1
@@ -343,12 +347,17 @@ class Caster:
     def cast(self, paths):
         self.on_busy(True)  # scanning a big folder can take a while too
         try:
-            files = expand(paths)
+            found = expand(paths)
+            files = [f for f in found if kind_of(f) in self.kinds]
             if not files:
+                if found:
+                    raise ValueError("The Apple TV can't show photos over AirPlay; cast videos or music")
                 raise ValueError("Nothing castable there (photos, videos or music)")
             with self.lock:
                 self.queue = files
                 self._play(0)  # on failure the queue is cleared again
+            if len(files) < len(found):
+                self.on_status(f"Left out {len(found) - len(files)} photos (AirPlay can't show them) · {self.describe()}")
         finally:
             self.on_busy(False)
 
@@ -494,7 +503,9 @@ class Caster:
                         err = self.server and self.server.read_error  # this machine couldn't serve it?
                         self._skip(f"The TV hit an error playing {cur.name}" + (f" ({err})" if err else ""))
                     else:
-                        self._skip(f"The TV couldn't play {cur.name}")
+                        why = getattr(self.tv, "error", None)  # an AirPlay renderer says why
+                        why = why if isinstance(why, str) else None
+                        self._skip(f"The TV couldn't play {cur.name}" + (f": {why}" if why else ""))
                 elif state in ("STOPPED", "NO_MEDIA_PRESENT"):
                     if not self._seen_playing:
                         if time.time() - self._started_at > LOAD_TIMEOUT_S:

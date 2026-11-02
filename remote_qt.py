@@ -1,7 +1,9 @@
-"""Qt interface for the TV remote: a handheld-remote layout plus the TV Cast window.
+"""Qt interface for the TV remote: a handheld-remote layout plus the TV Cast window, in two versions: a
+Samsung TV remote and an Apple TV remote modelled on the Siri Remote (with now playing). The device menu
+switches between them.
 
-Started by tv_remote.py (no arguments, or a tvremote:// link). Talks to the TV through tv_remote.TV and
-cast.Caster on worker threads; their events reach the GUI through a Qt signal.
+Started by tv_remote.py (no arguments, or a tvremote:// link). Talks to the TV through tv_remote.TV or
+appletv.AppleTV, and cast.Caster, on worker threads; their events reach the GUI through a Qt signal.
 Icons are Lucide (ISC, icons/LICENSE-lucide), recoloured at load time (QSS images use pre-tinted copies).
 Sizes follow the system font (KDE's font setting), so a larger font makes the whole remote larger.
 """
@@ -69,6 +71,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import appletv
 import cast
 import tv_remote as core  # the launcher runs tv_remote.py as __main__; this imports it again as a module
 
@@ -568,6 +571,97 @@ class Bridge(QObject):
     message = Signal(str, object)  # emitted from worker threads, delivered on the GUI thread
 
 
+class NowPlayingCard(QFrame):
+    """What the Apple TV is playing: artwork, title, show or artist, and a seek bar. Hidden while nothing
+    plays. The box reports changes (play, pause, seek), not every second, so the clock runs here between them."""
+
+    IDLE = ("idle", "stopped")
+
+    def __init__(self, remote):
+        super().__init__()
+        self.setObjectName("card")
+        self.remote = remote
+        self.info = None
+        self.reported_at = 0.0  # when info["position"] was true
+        h = QHBoxLayout(self)
+        h.setContentsMargins(px(10), px(10), px(12), px(10))
+        h.setSpacing(px(12))
+        self.art = QLabel()
+        self.art.setFixedSize(px(56), px(56))
+        self.art.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.art.setAccessibleName("Artwork")
+        h.addWidget(self.art, 0, Qt.AlignmentFlag.AlignTop)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        self.title = label(name="title")
+        self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.subtitle = label("", "caption")
+        self.subtitle.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.seek = QSlider(Qt.Orientation.Horizontal)
+        self.seek.setAccessibleName("Playback position on the Apple TV")
+        self.seek.sliderReleased.connect(self.seek_released)
+        self.elapsed, self.total = label("0:00", "caption"), label("0:00", "caption")
+        col.addWidget(self.title)
+        col.addWidget(self.subtitle)
+        col.addWidget(self.seek)
+        col.addLayout(hbox(self.elapsed, None, self.total))
+        h.addLayout(col, 1)
+        self.show_artwork(None)
+        self.clock = QTimer(self, interval=1000)
+        self.clock.timeout.connect(self.tick)
+        self.clock.start()
+        self.hide()
+
+    def show_info(self, info):
+        self.info = info
+        self.reported_at = time.monotonic()
+        if not info or info["state"] in self.IDLE or not info["title"]:
+            self.hide()
+            return
+        self.title.setText(info["title"])
+        self.title.setToolTip(info["title"])
+        sub = " · ".join(x for x in (info["subtitle"], info["app"]) if x)
+        if info["state"] == "paused":
+            sub = f"Paused · {sub}" if sub else "Paused"
+        self.subtitle.setText(sub)
+        total = info["total"] or 0
+        self.seek.setEnabled(total > 0)
+        self.seek.setRange(0, total)
+        self.total.setText(fmt_clock(total) if total else "")
+        self.tick()
+        self.show()
+
+    def show_artwork(self, data):
+        pm = QPixmap()
+        if data and pm.loadFromData(data):
+            self.art.setPixmap(pm.scaled(self.art.size() * self.devicePixelRatioF(),
+                                         Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            self.art.setStyleSheet("")
+        else:
+            self.art.setPixmap(icon("film", T["muted"], px(26)).pixmap(px(26), px(26)))
+            self.art.setStyleSheet(f"background: {T['raised']}; border-radius: 8px;")
+
+    def position(self):
+        info = self.info or {}
+        pos = info.get("position") or 0
+        if info.get("state") == "playing":
+            pos += time.monotonic() - self.reported_at
+        return min(pos, info.get("total") or pos)
+
+    def tick(self):
+        if self.info and not self.seek.isSliderDown():
+            pos = int(self.position())
+            self.seek.setValue(pos)
+            self.elapsed.setText(fmt_clock(pos))
+
+    def seek_released(self):
+        target = self.seek.value()
+        if self.info:  # show it there at once; the box confirms with an update
+            self.info = {**self.info, "position": target}
+            self.reported_at = time.monotonic()
+        self.remote.run(lambda: self.remote.tv.seek(target), "Couldn't seek")
+
+
 # Keyboard → TV key. (eventFilter ignores Shift and Keypad, so "+" works on any layout and numpad keys match.)
 KEYMAP = {
     Qt.Key.Key_Up: "KEY_UP", Qt.Key.Key_Down: "KEY_DOWN", Qt.Key.Key_Left: "KEY_LEFT", Qt.Key.Key_Right: "KEY_RIGHT",
@@ -576,6 +670,15 @@ KEYMAP = {
     Qt.Key.Key_Minus: "KEY_VOLDOWN", Qt.Key.Key_M: "KEY_MUTE", Qt.Key.Key_PageUp: "KEY_CHUP", Qt.Key.Key_PageDown: "KEY_CHDOWN",
     Qt.Key.Key_Space: "KEY_PAUSE", Qt.Key.Key_P: "KEY_PLAY", Qt.Key.Key_BracketLeft: "KEY_REWIND",
     Qt.Key.Key_BracketRight: "KEY_FF", Qt.Key.Key_S: "KEY_SOURCE", Qt.Key.Key_I: "KEY_INFO",
+}
+# The Apple TV remote's shortcuts: the Siri Remote has no channel, source, info or mute keys. C opens
+# Control Center.
+KEYMAP_APPLE = {
+    Qt.Key.Key_Up: "KEY_UP", Qt.Key.Key_Down: "KEY_DOWN", Qt.Key.Key_Left: "KEY_LEFT", Qt.Key.Key_Right: "KEY_RIGHT",
+    Qt.Key.Key_Return: "KEY_ENTER", Qt.Key.Key_Enter: "KEY_ENTER", Qt.Key.Key_Escape: "KEY_RETURN",
+    Qt.Key.Key_Backspace: "KEY_RETURN", Qt.Key.Key_H: "KEY_HOME", Qt.Key.Key_Plus: "KEY_VOLUP", Qt.Key.Key_Equal: "KEY_VOLUP",
+    Qt.Key.Key_Minus: "KEY_VOLDOWN", Qt.Key.Key_Space: "KEY_PLAY", Qt.Key.Key_P: "KEY_PLAY",
+    Qt.Key.Key_BracketLeft: "KEY_REWIND", Qt.Key.Key_BracketRight: "KEY_FF", Qt.Key.Key_C: "KEY_MENU",
 }
 APPS_WHEN_ON = "Apps appear when the TV is on"
 # Events that just set a fixed status line: (text, tone).
@@ -592,19 +695,39 @@ SHORTCUT_HELP = [
     ("Tab", "Move between on-screen keys (Space or Enter presses, Esc leaves)"), ("F11", "Full screen"),
     ("?", "This list"),
 ]
+SHORTCUT_HELP_APPLE = [
+    ("Arrow keys", "Move"), ("Enter", "Select"), ("Esc or Backspace", "Back"), ("H", "TV / Home"),
+    ("+ / −", "Volume"), ("Space / P", "Play / Pause"), ("[ / ]", "Skip back / ahead"), ("C", "Control Center"),
+    ("T", "Type text"), ("Tab", "Move between on-screen keys (Space or Enter presses, Esc leaves)"),
+    ("F11", "Full screen"), ("?", "This list"),
+]
+# The Apple TV's versions of STATUS_EVENTS ("pairing" never happens: it pairs once, in setup).
+STATUS_EVENTS_APPLE = {
+    **STATUS_EVENTS,
+    "off_done": ("Apple TV is asleep · press power to wake it", "off"),
+    "off": ("Apple TV isn't answering · check it's on", "off"),
+}
 
 
 class RemoteWindow(QWidget):
-    def __init__(self, cfg, open_cast_on_start=False):
+    switch_device = Signal(str)  # a device picked in the device menu (or just set up): run() opens its remote
+
+    def __init__(self, cfg, open_cast_on_start=False, device=None):
         super().__init__()
         self.setObjectName("window")
-        self.setWindowTitle("TV Remote")
+        self.device = device or core.pick_device(cfg)
+        self.apple = self.device == "appletv"
+        self.setWindowTitle("Apple TV Remote" if self.apple else "TV Remote")
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)  # clicking the background leaves the text box
-        self.cfg = cfg
+        self.root = cfg  # the whole config; self.cfg is this device's part of it (the same dict for Samsung)
         self.turned_off = False  # set once the TV confirmed it went off, until it connects again
         self.bridge = Bridge()
         self.bridge.message.connect(self.on_event)
-        self.tv = core.TV(cfg, self.post)
+        self.tv = core.make_client(cfg, self.device, self.post)
+        self.cfg = self.tv.cfg
+        self.keymap = KEYMAP_APPLE if self.apple else KEYMAP
+        self.status_events = STATUS_EVENTS_APPLE if self.apple else STATUS_EVENTS
+        self.now_card = None
         self.work, self.cast_work = queue.Queue(), queue.Queue()  # casting never delays remote keys
         for q, error_event in ((self.work, "error"), (self.cast_work, "cast_error")):
             threading.Thread(target=self._worker, args=(q, error_event), daemon=True).start()
@@ -619,17 +742,26 @@ class RemoteWindow(QWidget):
         v.setContentsMargins(px(20), px(20), px(20), px(14))
         v.setSpacing(px(12))
         v.addLayout(self._top_row())
-        v.addLayout(self._cast_row())
-        self.dpad = DPad(self.key_button)
-        v.addWidget(self.dpad, 0, Qt.AlignmentFlag.AlignHCenter)
-        v.addLayout(self._nav_row())
-        v.addLayout(self._volume_row())
-        v.addLayout(self._media_row())
+        if self.apple:  # the Siri Remote: d-pad, Back · TV · Play/Pause, volume; now playing above
+            v.addLayout(self._airplay_row())
+            self.now_card = NowPlayingCard(self)
+            v.addWidget(self.now_card)
+            self.dpad = DPad(self.key_button)
+            v.addWidget(self.dpad, 0, Qt.AlignmentFlag.AlignHCenter)
+            v.addLayout(self._apple_nav_row())
+            v.addLayout(self._apple_volume_row())
+        else:
+            v.addLayout(self._cast_row())
+            self.dpad = DPad(self.key_button)
+            v.addWidget(self.dpad, 0, Qt.AlignmentFlag.AlignHCenter)
+            v.addLayout(self._nav_row())
+            v.addLayout(self._volume_row())
+            v.addLayout(self._media_row())
         self._apps_section(v)
         v.addLayout(self._text_row())
-        help_btn = button("Keyboard shortcuts", "circle-help", tip="Keyboard shortcuts (?)", tone="ghost",
+        help_btn = button("Shortcuts", "circle-help", tip="Keyboard shortcuts (?)", tone="ghost",
                           on_click=self.show_shortcuts, icon_size=16, icon_colour=T["muted"])
-        v.addLayout(hbox(None, help_btn, None))
+        v.addLayout(hbox(None, help_btn, self._device_button(), None))
         place_body(self, body, px(10))
 
         self.progress_pending = False
@@ -658,13 +790,81 @@ class RemoteWindow(QWidget):
         dh.addWidget(self.status_dot)
         dh.addWidget(self.status_text, 1)
         self.set_status("Connecting…", "warn")
-        source = self.key_button("KEY_SOURCE", icon_name="import", tip="Source / input (S)", round=44)
+        if self.apple:
+            right = captioned(self.key_button("KEY_MENU", icon_name="layout-grid", tip="Control Center (C)",
+                                              round=44), "Control")
+        else:
+            right = captioned(self.key_button("KEY_SOURCE", icon_name="import", tip="Source / input (S)",
+                                              round=44), "Source")
         top = QHBoxLayout()
         top.setSpacing(px(10))
         top.addWidget(captioned(self.power_btn, "Power"), 0, Qt.AlignmentFlag.AlignTop)
         top.addWidget(display, 1, Qt.AlignmentFlag.AlignTop)
-        top.addWidget(captioned(source, "Source"), 0, Qt.AlignmentFlag.AlignTop)
+        top.addWidget(right, 0, Qt.AlignmentFlag.AlignTop)
         return top
+
+    def _airplay_row(self):
+        cast_btn = button("AirPlay cast", "cast", tip="Play videos or music from this PC on the Apple TV (AirPlay)",
+                          tone="outline", min_size=(0, 40), expand=True, on_click=self.open_cast)
+        if not appletv.can_cast():
+            cast_btn.setEnabled(False)
+            cast_btn.setToolTip(appletv.CAST_UNPATCHED)
+        return hbox(cast_btn)
+
+    def _apple_nav_row(self):
+        """Back · TV (home) · play/pause, as on the Siri Remote."""
+        nav = [captioned(self.key_button(k, icon_name=i, tip=t, round=48), c)
+               for k, i, t, c in (("KEY_RETURN", "undo-2", "Back (Esc)", "Back"),
+                                  ("KEY_HOME", "house", "TV / Home (H)", "TV"),
+                                  ("KEY_PLAY", "play", "Play / pause (Space)", "Play/Pause"))]
+        return hbox(None, *nav, None, spacing=px(26))
+
+    def _apple_volume_row(self):
+        """Skip back · VOL rocker · skip ahead."""
+        back = captioned(self.key_button("KEY_REWIND", icon_name="rewind", tip="Skip back ([)", round=44), "Skip back")
+        ahead = captioned(self.key_button("KEY_FF", icon_name="fast-forward", tip="Skip ahead (])", round=44),
+                          "Skip ahead")
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(back, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addSpacing(px(18))
+        row.addWidget(self.rocker("VOL", ("KEY_VOLUP", "plus", "Volume up (+)"),
+                                  ("KEY_VOLDOWN", "minus", "Volume down (−)")))
+        row.addSpacing(px(18))
+        row.addWidget(ahead, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addStretch(1)
+        return row
+
+    def _device_button(self):
+        """Which remote this is (Samsung TV / Apple TV), with a menu to switch or set one up."""
+        b = button(core.DEVICES[self.device], "chevron-down", tip="Switch between your TVs, or set up an Apple TV",
+                   tone="ghost", icon_size=16, icon_colour=T["muted"])
+        menu = QMenu(b)
+        menu.aboutToShow.connect(lambda: self.fill_device_menu(menu))
+        b.setMenu(menu)
+        b.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.device_btn, self.device_menu = b, menu
+        return b
+
+    def fill_device_menu(self, menu):
+        menu.clear()
+        ready = core.set_up_devices(self.root)
+        for device, name in core.DEVICES.items():
+            act = menu.addAction(name if device in ready else f"{name} (not set up)",
+                                 lambda d=device: d != self.device and self.switch_device.emit(d))
+            act.setCheckable(True)
+            act.setChecked(device == self.device)
+            act.setEnabled(device in ready)
+        menu.addSeparator()
+        menu.addAction("Pair Apple TV again…" if "appletv" in ready else "Set up Apple TV…", self.set_up_apple_tv)
+        if "samsung" not in ready:
+            menu.addAction("Set up Samsung TV…", lambda: QMessageBox.information(
+                self, "Set up Samsung TV", core.SAMSUNG_NOT_SET_UP))
+
+    def set_up_apple_tv(self):
+        dialog = AppleSetupDialog(self, self.root)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.switch_device.emit("appletv")  # a fresh remote, with the new pairing
 
     def _cast_row(self):
         mirror = button("Mirror screen", "screen-share", tip="Mirror this screen to the TV (Miracast)",
@@ -720,7 +920,7 @@ class RemoteWindow(QWidget):
     def _text_row(self):
         """Text for TV search boxes."""
         self.entry = QLineEdit()
-        self.entry.setPlaceholderText("Type into a TV search box…")
+        self.entry.setPlaceholderText("Type into an Apple TV search box…" if self.apple else "Type into a TV search box…")
         self.entry.setAccessibleName("Text to type on the TV")
         self.entry.setToolTip("Open a search box on the TV, type here and press Enter (T)")
         self.entry.addAction(icon("keyboard", T["muted"], px(18)), QLineEdit.ActionPosition.LeadingPosition)
@@ -815,9 +1015,9 @@ class RemoteWindow(QWidget):
             self.cfg["custom_apps"] = custom
         self.cfg["apps"] = self.cfg["apps"] + [a for a in found if a not in self.cfg["apps"]]
         self.cfg["favorites"], self.cfg["menu_apps"] = list(favorites), list(menu)
-        core.clean_app_lists(self.cfg)
+        (appletv.clean_app_lists if self.apple else core.clean_app_lists)(self.cfg)
         try:
-            core.save_config(self.cfg)
+            core.save_config(self.root)
         except OSError as e:
             self.set_status(f"Couldn't save the app list: {core.describe_error(e)}", "danger")
         self.build_apps(self.apps_note)
@@ -894,19 +1094,24 @@ class RemoteWindow(QWidget):
             self.send(key)
 
     def power(self):
+        noun = "Apple TV" if self.apple else "TV"
+
         def go():
             if self.tv.power_state() == "on":
-                self.post("status", "Turning the TV off…")
+                self.post("status", f"Turning the {noun} off…")
                 if self.tv.turn_off():  # don't claim it until the TV says so
                     self.post("off_done")
                 else:
-                    self.post("error", core.TURN_OFF_FAILED)
+                    self.post("error", "The Apple TV still reports it's on" if self.apple else core.TURN_OFF_FAILED)
             else:
-                self.post("status", "Waking the TV…")
+                self.post("status", f"Waking the {noun}…")
                 self.tv.wake()
                 if self.tv.wait_until_on():
                     self.tv.connect()
+                    self.post("connected")
                     self.post("apps", self.tv.scan_apps())
+                elif self.apple:
+                    self.post("error", "Sent power on, but the Apple TV didn't wake")
                 else:
                     self.post("error", core.WAKE_FAILED.format(host=self.tv.host))
         self.run(go, "Couldn't change the power")
@@ -931,7 +1136,7 @@ class RemoteWindow(QWidget):
 
     def show_shortcuts(self):
         rows = "".join(f"<tr><td style='padding:3px 18px 3px 0'><b>{k}</b></td><td>{a}</td></tr>"
-                       for k, a in SHORTCUT_HELP)
+                       for k, a in (SHORTCUT_HELP_APPLE if self.apple else SHORTCUT_HELP))
         box = QMessageBox(QMessageBox.Icon.NoIcon, "Keyboard shortcuts", f"<table>{rows}</table>",
                           QMessageBox.StandardButton.Close, self)
         box.exec()
@@ -947,7 +1152,7 @@ class RemoteWindow(QWidget):
         """The Caster, created on first use (GUI thread only) with the cast window's slideshow settings."""
         if self.caster is None:
             self.caster = cast.Caster(self.tv.host, lambda text: self.post("cast", text),
-                                      lambda busy: self.post("cast_busy", busy))
+                                      lambda busy: self.post("cast_busy", busy), renderer=self.tv.renderer())
             if self.cast_window:
                 self.cast_window.apply_slideshow()
         return self.caster
@@ -982,15 +1187,28 @@ class RemoteWindow(QWidget):
                 self.run(lambda: self.cfg["apps"] or self.post("apps", self.tv.scan_apps()), "Couldn't load the apps")
         elif event == "disconnected" and self.turned_off:
             pass  # the TV drops the connection as it goes to standby; keep "TV turned off"
-        elif event in STATUS_EVENTS:
+        elif event in self.status_events:
             self.turned_off = event == "off_done"
-            self.set_status(*STATUS_EVENTS[event])
+            self.set_status(*self.status_events[event])
             if event == "off" and data:
                 self.status_text.setToolTip(f"No answer from {self.tv.host}: {data}")
             if event == "off" and not self.cfg["apps"]:
                 self.build_apps(APPS_WHEN_ON)
         elif event == "apps":
             self.build_apps(None if data else "No apps found")
+        elif event == "now_playing":
+            if self.now_card:
+                self.now_card.show_info(data)
+        elif event == "artwork":
+            if self.now_card:
+                self.now_card.show_artwork(data)
+        elif event == "power":  # the Apple TV went to sleep or woke (its own remote, or a timer)
+            if data == "off":
+                self.turned_off = True
+                self.set_status(*self.status_events["off_done"])
+            elif data == "on" and self.turned_off:
+                self.turned_off = False
+                self.set_status(f"Connected · {self.tv.host}", "ok")
         elif event == "apps_checked":
             if self.apps_dialog:
                 self.apps_dialog.checked_tv(data)
@@ -1052,8 +1270,8 @@ class RemoteWindow(QWidget):
             self.entry.setFocus()
         elif k == Qt.Key.Key_Question:
             self.show_shortcuts()
-        elif k in KEYMAP:
-            self.press(KEYMAP[k], repeat=e.isAutoRepeat())
+        elif k in self.keymap:
+            self.press(self.keymap[k], repeat=e.isAutoRepeat())
         else:
             return False
         return True
@@ -1117,9 +1335,12 @@ class AppsDialog(QDialog):
         self.found = []  # apps the TV confirmed while adding by ID, not yet in cfg["apps"]
         self.checked = None  # how the TV check started on opening went: None = still asking, then ok or not
         self.add_dialog = None
-        v = dialog_body(self, "Edit apps", f"Tick up to {core.MAX_FAVORITES} apps for the remote's buttons; they "
-                        "appear in this order. The rest are in All apps. Apps that aren't on the TV stay hidden "
-                        "on the remote until they are.", 380)
+        self.apple = remote.apple
+        intro = (f"Tick up to {core.MAX_FAVORITES} apps for the remote's buttons; they appear in this order. Every "
+                 "other app on the Apple TV is in All apps." if self.apple else
+                 f"Tick up to {core.MAX_FAVORITES} apps for the remote's buttons; they appear in this order. The rest "
+                 "are in All apps. Apps that aren't on the TV stay hidden on the remote until they are.")
+        v = dialog_body(self, "Edit apps", intro, 380)
         self.list = app_list("Your apps", 9)
         self.list.itemChanged.connect(self.item_changed)
         self.list.currentRowChanged.connect(self.update_buttons)
@@ -1136,6 +1357,8 @@ class AppsDialog(QDialog):
         add = button("Add apps…", "plus", tip="Add popular apps, or an app by its ID", tone="outline", icon_size=16,
                      on_click=self.open_add)
         v.addLayout(hbox(self.up, self.down, self.remove, None, add))
+        self.remove.setVisible(not self.apple)  # the box lists every app it has: nothing to add or remove
+        add.setVisible(not self.apple)
         reset = button("Reset to defaults", tip="The default apps, and no apps added by ID", tone="ghost",
                        on_click=self.reset)
         cancel = button("Cancel", tone="outline", on_click=self.reject)
@@ -1158,6 +1381,10 @@ class AppsDialog(QDialog):
                 if self.list.item(i).checkState() == Qt.CheckState.Checked]
 
     def fill(self, favorites, menu):
+        if self.apple:  # only what the box has: its list is complete, so the rest can't appear later
+            installed = {a["appId"] for a in self.remote.cfg["apps"]}
+            favorites = [k for k in favorites if k in installed]
+            menu = [k for k in menu if k in installed]
         self.list.clear()
         self.add_keys(favorites, ticked=True)
         self.add_keys(menu)
@@ -1180,7 +1407,7 @@ class AppsDialog(QDialog):
         cfg = self.view_cfg()
         status = self.status(key)
         item.setText(f"{core.app_name(cfg, key)}  ·  {status}")
-        item.setToolTip("App ID: " + ", ".join(core.app_ids(key)))
+        item.setToolTip(("Bundle ID: " if self.apple else "App ID: ") + ", ".join(core.app_ids(key)))
         item.setForeground(QColor(T["fg"] if status == INSTALLED else T["muted"]))
 
     def refresh(self):
@@ -1208,7 +1435,7 @@ class AppsDialog(QDialog):
         row = self.list.currentRow()
         self.up.setEnabled(row > 0)
         self.down.setEnabled(0 <= row < self.list.count() - 1)
-        self.remove.setEnabled(row >= 0)
+        self.remove.setEnabled(row >= 0 and not self.apple)
 
     def move_selected(self, step):
         row = self.list.currentRow()
@@ -1232,7 +1459,12 @@ class AppsDialog(QDialog):
 
     def reset(self):
         self.custom = []
-        self.fill(core.DEFAULT_FAVORITES, core.DEFAULT_MENU)
+        if self.apple:
+            installed = [a["appId"] for a in self.remote.cfg["apps"]]
+            favorites = [k for k in appletv.DEFAULT_FAVORITES if k in installed]
+            self.fill(favorites, [k for k in installed if k not in favorites])
+        else:
+            self.fill(core.DEFAULT_FAVORITES, core.DEFAULT_MENU)
         self.note.setText("Back to the default apps. Save to keep them.")
 
     def open_add(self):
@@ -1371,6 +1603,157 @@ class AddAppDialog(QDialog):
             self.id_note.setText(f"Couldn't ask the TV: {result}")
 
 
+class AppleSetupDialog(QDialog):
+    """Set up Apple TV: find the boxes on the LAN, pick one, then type the PIN it shows, twice: Companion
+    (keys, apps, power) and AirPlay (now playing, casting). The pairing is saved and the Apple TV becomes
+    the device in use. pyatv blocks, so each step runs on its own thread and reports back by signal."""
+
+    def __init__(self, parent, cfg):
+        super().__init__(parent)
+        self.setModal(True)
+        self.cfg = cfg
+        self.boxes = []
+        self.pairing = None
+        self.step = 0  # index into Pairing.STEPS
+        self.stage = "pick"  # pick (choose a box), pin (waiting for a PIN), busy
+        self.bridge = Bridge()
+        self.bridge.message.connect(self.on_event)
+        v = dialog_body(self, "Set up Apple TV", "Pick your Apple TV. It shows a PIN twice: once to allow remote "
+                        "keys and apps, then once for now playing and casting.", 360)
+        self.list = app_list("Apple TVs on this network", 4)
+        self.list.itemSelectionChanged.connect(self.update_next)
+        self.address = QLineEdit()
+        self.address.setPlaceholderText("Not listed? Its address (Settings › Network)")
+        self.address.setAccessibleName("Apple TV address, if it isn't found")
+        self.address.returnPressed.connect(self.scan)
+        self.list.itemDoubleClicked.connect(lambda _: self.advance())
+        v.addWidget(self.list)
+        v.addWidget(self.address)
+        self.busy = BusyBar()
+        v.addWidget(self.busy)
+        self.note = label("", "caption")
+        self.note.setWordWrap(True)
+        v.addWidget(self.note)
+        self.pin = QLineEdit()
+        self.pin.setPlaceholderText("PIN shown on the TV")
+        self.pin.setAccessibleName("PIN shown on the TV")
+        self.pin.setMaxLength(8)
+        self.pin.returnPressed.connect(self.advance)
+        self.pin.textChanged.connect(self.update_next)
+        self.pin.hide()
+        v.addWidget(self.pin)
+        self.search = button("Search again", tone="ghost", on_click=self.scan)
+        cancel = button("Cancel", tone="outline", on_click=self.reject)
+        self.next = button("Pair", tone="accent", on_click=self.advance)
+        v.addLayout(hbox(self.search, None, cancel, self.next))
+        self.scan()
+
+    def post(self, event, data=None):
+        self.bridge.message.emit(event, data)
+
+    def background(self, fn, event):
+        """fn() on a thread; its result comes back as event, a failure as "error"."""
+        self.stage = "busy"
+        self.busy.set_busy(True)
+        self.update_next()
+
+        def go():
+            try:
+                self.post(event, fn())
+            except Exception as e:  # noqa: BLE001 - shown in the dialog
+                self.post("error", core.describe_error(e))
+        threading.Thread(target=go, daemon=True).start()
+
+    def scan(self):
+        self.list.clear()
+        self.note.setText("Looking for Apple TVs…")
+        hosts = [self.address.text().strip(), appletv.section(self.cfg).get("host")]
+        self.background(lambda: appletv.discover(hosts=hosts), "found")
+
+    def update_next(self, *_):
+        idle = self.stage != "busy"
+        self.search.setEnabled(idle and self.pairing is None)
+        if self.stage == "pin":
+            self.next.setText("OK")
+            self.next.setEnabled(bool(self.pin.text().strip()))
+        else:
+            self.next.setText("Pair")
+            self.next.setEnabled(idle and bool(self.list.selectedItems()))
+
+    def advance(self):
+        if self.stage == "pin" and self.pin.text().strip() and (pairing := self.pairing):
+            pin = self.pin.text()
+            self.note.setText("Checking the PIN…")
+            self.background(lambda: pairing.pin(pin), "pinned")
+        elif self.stage == "pick" and self.list.selectedItems():
+            box = self.boxes[self.list.currentRow()]
+            if self.pairing is None:
+                self.pairing = appletv.Pairing(box["identifier"], self.cfg.get("name") or core.DEFAULTS["name"],
+                                               box["host"])
+            self.list.setEnabled(False)
+            self.begin_step()
+
+    def begin_step(self):
+        pairing = self.pairing
+        if pairing is None:
+            return
+        self.note.setText("Asking the Apple TV for a PIN…")
+        step = appletv.Pairing.STEPS[self.step]
+        self.background(lambda: pairing.begin(step), "begun")
+
+    def on_event(self, event, data):
+        self.busy.set_busy(False)
+        if event == "found":
+            self.boxes = data
+            self.stage = "pick"
+            for b in data:
+                self.list.addItem(f"{b['name']}  ·  {b['model']}")
+            if data:
+                self.list.setCurrentRow(0)
+                self.note.setText("")
+            else:
+                self.note.setText("No Apple TV answered. Check it's on and on this network, or type its address "
+                                  "above, then Search again.")
+        elif event == "begun":
+            if data is False:  # this box doesn't offer the protocol: nothing to pair for it
+                self.next_step()
+                return
+            self.stage = "pin"
+            self.pin.clear()
+            self.pin.show()
+            self.pin.setFocus()
+            n = len(appletv.Pairing.STEPS)
+            self.note.setText(f"Type the PIN shown on the TV ({self.step + 1} of {n}).")
+        elif event == "pinned":
+            self.pin.hide()
+            self.next_step()
+            return
+        elif event == "saved":
+            self.accept()
+            return
+        elif event == "error":
+            # A failed step can be tried again from its start (the TV shows a new PIN).
+            self.note.setText(f"{data}. Press Pair to try again.")
+            self.pin.hide()
+            self.stage = "pick"
+            self.list.setEnabled(self.pairing is None or self.step == 0)
+        self.update_next()
+
+    def next_step(self):
+        self.step += 1
+        if self.step < len(appletv.Pairing.STEPS):
+            self.begin_step()
+        elif pairing := self.pairing:
+            self.note.setText("Saving…")
+            self.background(lambda: pairing.save(self.cfg), "saved")
+
+    def done(self, result):
+        if self.pairing is not None:
+            threading.Thread(target=self.pairing.close, daemon=True).start()
+            self.pairing = None
+        super().done(result)
+
+
 class CastWindow(QWidget):
     """Photos/videos/music picker and playback controls for DLNA casting."""
 
@@ -1378,19 +1761,27 @@ class CastWindow(QWidget):
         super().__init__(None, Qt.WindowType.Window)
         self.remote = remote
         self.setObjectName("window")
-        self.setWindowTitle("TV Cast")
+        apple = remote.apple
+        self.setWindowTitle("AirPlay Cast" if apple else "TV Cast")
         self.setAcceptDrops(True)
         body = frame("body")
         v = QVBoxLayout(body)
         v.setContentsMargins(px(22), px(22), px(22), px(18))
         v.setSpacing(px(14))
 
-        v.addWidget(label("TV Cast", name="title"))
-        v.addWidget(label("Play photos, videos and music from this PC on the TV.", "muted"))
+        v.addWidget(label("AirPlay Cast" if apple else "TV Cast", name="title"))
+        v.addWidget(label("Play videos and music from this PC on the Apple TV." if apple else
+                          "Play photos, videos and music from this PC on the TV.", "muted"))
         v.addWidget(self._picker())
         self._now_playing(v)
         self._transport(v)
-        v.addLayout(self._slideshow())
+        slideshow = self._slideshow()
+        v.addLayout(slideshow)
+        if apple:  # AirPlay from here can't show photos (pyatv streams video and audio only)
+            self.photos_btn.setEnabled(False)
+            self.photos_btn.setToolTip("AirPlay can't show photos from this PC")
+            self.auto.hide()
+            self.secs.hide()
         note = label("Files stream from this PC, so closing the remote stops casting. "
                      "Use the remote's VOL keys for volume. Esc closes this window.", "caption")
         note.setWordWrap(True)
@@ -1414,6 +1805,8 @@ class CastWindow(QWidget):
             b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
             b.setText(text)  # no leading gap when the icon is above
             grid.addWidget(b, i // 2, i % 2)
+            if kind == "image":
+                self.photos_btn = b
         drop = label("or drop files here", "caption")
         drop.setAlignment(Qt.AlignmentFlag.AlignCenter)
         grid.addWidget(drop, 2, 0, 1, 2)
@@ -1624,6 +2017,25 @@ def claim_instance(msg):
     raise InstanceError("Another TV Remote seems to be starting but doesn't answer; try again in a moment.")
 
 
+def first_device(cfg, why):
+    """No device is set up: say how, and offer to set up an Apple TV here. The device, or None to quit."""
+    box = QMessageBox(QMessageBox.Icon.Information, "TV Remote", why, QMessageBox.StandardButton.Close)
+    setup = box.addButton("Set up Apple TV…", QMessageBox.ButtonRole.AcceptRole)
+    box.exec()
+    if box.clickedButton() is setup and AppleSetupDialog(None, cfg).exec() == QDialog.DialogCode.Accepted:
+        return "appletv"
+    return None
+
+
+def shut_down(window):
+    """Stop what a closed remote window was doing: its casting (the file server goes with it) and its TV link."""
+    if window.caster:
+        if window.caster.current:
+            window.caster.stop()
+        window.caster.close()
+    window.tv.close()
+
+
 def run(cast_window=False):
     listener = claim_instance(b"cast" if cast_window else b"raise")
     if listener is None:
@@ -1636,8 +2048,37 @@ def run(cast_window=False):
     app.setPalette(palette())
     app.setStyleSheet(stylesheet())
 
-    window = RemoteWindow(core.load_config(), cast_window)
-    app.installEventFilter(window)  # keyboard shortcuts, see RemoteWindow.eventFilter
+    cfg = core.load_config()
+    try:
+        device = core.pick_device(cfg)
+    except core.ConfigError as e:
+        device = first_device(cfg, str(e))
+        if device is None:
+            listener.close()
+            return
+    current = {}  # the open remote window; switching devices replaces it
+
+    def open_window(device, open_cast=False):
+        old = current.get("window")
+        window = RemoteWindow(cfg, open_cast, device)
+        window.switch_device.connect(lambda d: QTimer.singleShot(0, lambda: open_window(d)))
+        app.installEventFilter(window)  # keyboard shortcuts, see RemoteWindow.eventFilter
+        current["window"] = window
+        if cfg["device"] != device:
+            cfg["device"] = device
+            try:
+                core.save_config(cfg)
+            except OSError:
+                pass  # only which remote opens next time
+        if old is not None:
+            window.move(old.pos())
+        window.show()  # before the old one closes, so closing it doesn't quit the app
+        if old is not None:
+            app.removeEventFilter(old)
+            old.close()
+            threading.Thread(target=shut_down, args=(old,), daemon=True).start()  # may wait on TV timeouts
+
+    open_window(device, cast_window)
 
     def accept_raises():
         while True:
@@ -1654,17 +2095,12 @@ def run(cast_window=False):
                 except OSError:
                     msg = b"raise"
             cmd, _, token = msg.partition(b"\n")
-            window.post("raise", (cmd.decode(errors="replace"), token.decode(errors="replace")))
+            current["window"].post("raise", (cmd.decode(errors="replace"), token.decode(errors="replace")))
 
     threading.Thread(target=accept_raises, daemon=True).start()
-    window.show()
     app.exec()
     # Stop answering raise_existing() first: the cleanup below can wait on TV timeouts, and a relaunch
     # meanwhile must start a new window, not "raise" this closed one.
     listener.shutdown(socket.SHUT_RDWR)
     listener.close()
-    if window.caster:
-        if window.caster.current:
-            window.caster.stop()  # the file server is going away with this process
-        window.caster.close()
-    window.tv.close()
+    shut_down(current["window"])  # the file server is going away with this process
