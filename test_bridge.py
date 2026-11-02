@@ -116,6 +116,9 @@ def test_status(server, tv):
 
 def test_power_on_answers_at_once(server, tv):
     assert request(server, "POST", "/power/on") == (202, {"ok": True})
+    deadline = time.time() + 3
+    while not tv.calls and time.time() < deadline:
+        time.sleep(0.01)
     assert tv.calls == ["wake"]
 
 

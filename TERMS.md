@@ -18,23 +18,25 @@ applies.
 
 ## 2. Your responsibilities
 
-- Use the app only with your own TV, or a TV you have permission to control. Don't use it to
+- Use the app only with your own TV or Apple TV, or one you have permission to control. Don't use it to
   control, disrupt or access other people's devices.
 - Cast or mirror only content that you have the right to show.
 - You're responsible for your network and its security. The app relies on your TV's own
   pairing prompt and on your local network being trusted.
 
-## 3. Not affiliated with Samsung
+## 3. Not affiliated with Samsung or Apple
 
 The app is an independent project. It isn't made, endorsed or supported by Samsung
-Electronics. "Samsung", "Tizen" and related names are trademarks of their owners and are used
-only to describe which TVs the app works with. Samsung can change its TVs' software at any
-time, and that may stop some or all features from working.
+Electronics or Apple Inc. "Samsung", "Tizen", "Apple TV", "tvOS", "AirPlay", "Siri" and related
+names are trademarks of their owners and are used only to describe which devices the app works
+with. Samsung and Apple can change their devices' software at any time, and that may stop some
+or all features from working.
 
 ## 4. Third-party software
 
 The app uses other software that is covered by its own licenses and terms, including Qt for
-Python (PySide6), websocket-client, ffmpeg, GNOME Network Displays and the Lucide icons
+Python (PySide6), websocket-client, pyatv (MIT License; `tools/pyatv-airplay.patch` holds changes from
+pyatv pull request #2846 under that license), biplist, ffmpeg, GNOME Network Displays and the Lucide icons
 (ISC License, see `icons/LICENSE-lucide`). Those terms apply to those components.
 
 ## 5. No warranty

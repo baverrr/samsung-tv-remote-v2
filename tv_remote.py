@@ -1,11 +1,14 @@
-"""Desktop remote for Samsung Tizen TVs (2016+): keys over the TV's local WebSocket API, apps and
-power state over its REST API, power-on by Wake-on-LAN, casting over DLNA (cast.py).
+"""Desktop remote for Samsung Tizen TVs (2016+) and Apple TV boxes (tvOS, in appletv.py).
+Samsung: keys over the TV's local WebSocket API, apps and power state over its REST API, power-on by
+Wake-on-LAN, casting over DLNA (cast.py). Apple TV: Companion, MRP and AirPlay through pyatv.
 
 GUI:  tv-remote [tvremote://open | tvremote://cast]   (Qt, in remote_qt.py; cast also opens TV Cast)
-CLI:  tv-remote key KEY_VOLUP [KEY_MUTE ...] | apps | launch <name> | text <string> | on | off | info
-      tv-remote cast <files or folders...> | mirror
+CLI:  tv-remote [--device samsung|appletv] COMMAND   (default: the device used last)
+      tv-remote key KEY_VOLUP [KEY_MUTE ...] | apps | launch <name> | text <string> | on | off | info
+      tv-remote cast <files or folders...> | mirror | playing
       tv-remote serve [--token] [port]   (HTTP bridge for e.g. an ESP32 remote, in bridge.py)
-      (key also takes short names: volup -> KEY_VOLUP)
+      tv-remote appletv scan | pair      (find Apple TVs; pair this remote with one)
+      (key also takes short names: volup -> KEY_VOLUP; on an Apple TV also select, play_pause, ...)
 """
 
 import base64
@@ -23,7 +26,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn, Protocol
 
 import websocket
 
@@ -33,7 +36,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "tv-remote" / "config.json"
 # Stand-ins for a TV that isn't set up yet (addresses reserved for documentation: RFC 5737, RFC 7042).
 UNSET_HOST, UNSET_MAC = "192.0.2.10", "00:00:5e:00:53:01"
-DEFAULTS = {"host": UNSET_HOST, "mac": UNSET_MAC, "name": "Linux Remote", "token": None, "apps": []}
+DEFAULTS = {"host": UNSET_HOST, "mac": UNSET_MAC, "name": "Linux Remote", "token": None, "apps": [],
+            "device": "samsung"}
+DEVICES = {"samsung": "Samsung TV", "appletv": "Apple TV"}  # "device" in the config: the one in use
 # Popular apps and their publicly reported Tizen app IDs (community lists; Samsung publishes none). Some
 # apps were given a new ID for 2020+ TVs, so every known ID is listed. 2021+ firmware ignores the websocket
 # "installed apps" request, so each ID is probed over REST: only IDs the TV reports count as installed, and
@@ -120,12 +125,83 @@ def load_config():
     if not isinstance(user, dict):
         raise ConfigError(f"{CONFIG} must hold a JSON object; fix it or delete it to start over.")
     cfg.update(user)
-    if cfg.get("host") in (None, "", UNSET_HOST):
-        raise ConfigError(f"No TV is set up yet. Put your TV's address in {CONFIG}, e.g.\n"
-                          '{"host": "192.168.1.50", "mac": "aa:bb:cc:dd:ee:ff"}\n'
-                          "(the MAC address is only needed to turn the TV on; see the README's Setup section).")
+    if cfg.get("device") not in DEVICES:
+        cfg["device"] = "samsung"
     clean_app_lists(cfg)
     return cfg
+
+
+SAMSUNG_NOT_SET_UP = (f"No Samsung TV is set up yet. Put your TV's address in {CONFIG}, e.g.\n"
+                      '{"host": "192.168.1.50", "mac": "aa:bb:cc:dd:ee:ff"}\n'
+                      "(the MAC address is only needed to turn the TV on; see the README's Setup section).\n"
+                      "For an Apple TV, choose Set up Apple TV… in the remote, or run: tv-remote appletv pair")
+
+
+def is_set_up(cfg, device):
+    if device == "appletv":
+        import appletv
+        return appletv.is_set_up(cfg)
+    return cfg.get("host") not in (None, "", UNSET_HOST)
+
+
+def set_up_devices(cfg):
+    return [d for d in DEVICES if is_set_up(cfg, d)]
+
+
+def pick_device(cfg, wanted=None):
+    """The device to use: wanted if given (it must be set up), else the one used last, else whichever is
+    set up. ConfigError says how to set one up if none is."""
+    if wanted is not None:
+        if wanted not in DEVICES:
+            raise ConfigError(f"Unknown device {wanted!r}: use {' or '.join(DEVICES)}")
+        if not is_set_up(cfg, wanted):
+            import appletv
+            raise ConfigError(appletv.NOT_SET_UP if wanted == "appletv" else SAMSUNG_NOT_SET_UP)
+        return wanted
+    ready = set_up_devices(cfg)
+    if cfg["device"] in ready:
+        return cfg["device"]
+    if ready:
+        return ready[0]
+    raise ConfigError(SAMSUNG_NOT_SET_UP)
+
+
+class Client(Protocol):
+    """What the window, CLI and bridge use of a device client: TV (Samsung) or appletv.AppleTV. cfg is
+    this device's part of the config (all of it for Samsung), root the whole file save_config() writes.
+    Device-only extras (TV.locate, AppleTV.now_playing and seek) are reached after checking kind."""
+
+    kind: str
+    cfg: dict
+    root: dict
+    host: str
+    unreachable: str | None  # why the last power_state() said "off"
+    apps_from_cache: bool  # the last scan_apps() couldn't ask and returned the saved list
+
+    @property
+    def turn_off_failed(self) -> str: ...  # what to say when turn_off() returned False
+    def info(self, host=None) -> Any: ...
+    def power_state(self) -> str: ...  # "on", "standby" or "off"
+    def connect(self) -> Any: ...
+    def resolve_key(self, name) -> str: ...
+    def key(self, key) -> None: ...
+    def text(self, s) -> None: ...
+    def scan_apps(self) -> list: ...
+    def probe_app(self, app_id) -> Any: ...
+    def launch(self, app) -> None: ...
+    def wake(self) -> None: ...
+    def wait_until_on(self, timeout=25) -> bool: ...
+    def turn_off(self) -> bool: ...
+    def renderer(self) -> Any: ...  # for cast.Caster: cast.Renderer or appletv.AirPlayRenderer
+    def close(self) -> None: ...
+
+
+def make_client(cfg, device, on_event=lambda event, data: None) -> Client:
+    """The client for a device: TV (Samsung) or appletv.AppleTV, which offer the same methods."""
+    if device == "appletv":
+        import appletv
+        return appletv.AppleTV(cfg, on_event)
+    return TV(cfg, on_event)
 
 
 _save_lock = threading.Lock()  # the GUI saves app lists while a worker thread may save a scan
@@ -175,7 +251,7 @@ def app_ids(key):
     """The IDs an app key can have on a TV."""
     if key.startswith(CUSTOM):
         return [key.removeprefix(CUSTOM)]
-    return CATALOG_BY_KEY[key]["ids"] if key in CATALOG_BY_KEY else []
+    return CATALOG_BY_KEY[key]["ids"] if key in CATALOG_BY_KEY else [key]  # an Apple TV bundle ID is its own key
 
 
 def installed_app(cfg, key):
@@ -190,7 +266,7 @@ def app_name(cfg, key):
         return app["name"]
     if key.startswith(CUSTOM):
         return next((a["name"] for a in cfg["custom_apps"] if CUSTOM + a["appId"] == key), key)
-    return CATALOG_BY_KEY[key]["name"]
+    return CATALOG_BY_KEY[key]["name"] if key in CATALOG_BY_KEY else key
 
 
 def key_for_id(app_id):
@@ -199,8 +275,12 @@ def key_for_id(app_id):
 
 
 class TV:
+    kind = "samsung"
+    turn_off_failed = TURN_OFF_FAILED  # what to say when turn_off() returned False
+
     def __init__(self, cfg, on_event=lambda event, data: None):
         self.cfg = cfg
+        self.root = cfg  # what save_config() writes (the Apple TV client's cfg is a part of it)
         self.on_event = on_event
         self.ws = None
         self.host = cfg["host"]  # where the TV is now: the configured (wired) address, or where locate() found it
@@ -385,6 +465,10 @@ class TV:
                     if attempt == 2:
                         raise
 
+    @staticmethod
+    def resolve_key(name):
+        return name if name.startswith("KEY_") else "KEY_" + name.upper()
+
     def key(self, key):
         self._send({"method": "ms.remote.control", "params": {
             "Cmd": "Click", "DataOfCmd": key, "Option": "false", "TypeOfRemote": "SendRemoteKey"}})
@@ -503,6 +587,9 @@ class TV:
                 return True
         return False
 
+    def renderer(self):
+        return None  # cast.Caster's default: the TV's DLNA renderer
+
     def close(self):
         ws, self.ws = self.ws, None
         if ws:
@@ -531,33 +618,100 @@ def fatal(msg) -> NoReturn:
     sys.exit(msg)
 
 
+def take_device(args):
+    """--device NAME (or --device=NAME) out of the arguments: (device or None, the other arguments)."""
+    device, rest, i = None, [], 0
+    while i < len(args):
+        a = args[i]
+        if a == "--device" and i + 1 < len(args):
+            device, i = args[i + 1], i + 2
+            continue
+        if a.startswith("--device="):
+            device = a.split("=", 1)[1]
+        else:
+            rest.append(a)
+        i += 1
+    return device, rest
+
+
 def cli(args):
+    wanted, args = take_device(args)
+    if not args:
+        sys.exit(__doc__)
     try:
         cfg = load_config()
+        if args[0] == "appletv":
+            appletv_command(cfg, args[1:])
+            return
+        tv = make_client(cfg, pick_device(cfg, wanted),
+                         lambda e, d: e == "pairing" and print("Accept the connection prompt on the TV…", file=sys.stderr))
     except ConfigError as e:
         sys.exit(str(e))
-    tv = TV(cfg, lambda e, d: e == "pairing" and print("Accept the connection prompt on the TV…", file=sys.stderr))
+    except (OSError, RuntimeError, ValueError) as e:  # pairing or scanning an Apple TV
+        sys.exit(describe_error(e))
     try:
-        run_command(tv, cfg, args[0], args[1:])
+        run_command(tv, tv.cfg, args[0], args[1:])
     except urllib.error.HTTPError as e:  # an OSError too, but the TV did answer
         sys.exit(f"The TV at {tv.host} refused the request: {describe_error(e)}")
     except (OSError, websocket.WebSocketException) as e:  # TV off or off the network: one line, not a traceback
-        sys.exit(f"Couldn't reach the TV at {tv.host}: {describe_error(e)}")
+        sys.exit(f"Couldn't reach {DEVICE_NOUN[tv.kind]} at {tv.host}: {describe_error(e)}")
     except (RuntimeError, ValueError) as e:  # reached it, but it failed (pairing refused, nothing to cast, ...)
         sys.exit(str(e))
-    time.sleep(0.2)  # let the last frame flush before closing
-    tv.close()
+    finally:
+        time.sleep(0.2)  # let the last frame flush before closing
+        tv.close()
+
+
+DEVICE_NOUN = {"samsung": "the TV", "appletv": "the Apple TV"}
+
+
+def appletv_command(cfg, rest):
+    """tv-remote appletv scan | pair [address]: find Apple TVs, or pair this remote with one (PINs typed
+    here). An address (or the one saved last) is asked directly when the network search finds nothing."""
+    import appletv
+    sub = rest[0] if rest else "pair"
+    if sub not in ("scan", "pair"):
+        sys.exit("usage: tv-remote appletv scan | pair [address]")
+    print("Looking for Apple TVs…", file=sys.stderr)
+    boxes = appletv.discover(hosts=[*rest[1:2], appletv.section(cfg).get("host")])
+    if not boxes:
+        sys.exit("No Apple TV answered. Check it's on and on this network; if it is, give its address "
+                 "(Settings › Network on the Apple TV): tv-remote appletv pair <address>")
+    for i, b in enumerate(boxes, 1):
+        print(f"{i}. {b['name']}  ·  {b['model']}  ·  {b['host']}")
+    if sub == "scan":
+        return
+    box = boxes[0]
+    if len(boxes) > 1:
+        choice = input(f"Pair with which one (1-{len(boxes)})? ").strip()
+        if not choice.isdigit() or not 1 <= int(choice) <= len(boxes):
+            sys.exit("No Apple TV picked.")
+        box = boxes[int(choice) - 1]
+    pairing = appletv.Pairing(box["identifier"], cfg.get("name") or DEFAULTS["name"], box["host"])
+    try:
+        for step, what in zip(pairing.STEPS, ("remote keys and apps", "now playing and casting"), strict=True):
+            if not pairing.begin(step):
+                print(f"{box['name']} doesn't offer {step}; skipped", file=sys.stderr)
+                continue
+            pairing.pin(input(f"PIN shown on the TV ({what}): "))
+        pairing.save(cfg)
+    except (KeyboardInterrupt, EOFError):
+        sys.exit("\nPairing cancelled; nothing was saved.")
+    finally:
+        pairing.close()
+    print(f"Paired with {box['name']}. It's now the device in use; --device samsung reaches the Samsung TV.")
 
 
 def run_command(tv, cfg, cmd, rest):
     if cmd == "key":
         for k in rest:
-            tv.key(k if k.startswith("KEY_") else "KEY_" + k.upper())
+            tv.key(tv.resolve_key(k))
             time.sleep(0.15)
     elif cmd == "apps":
         apps = tv.scan_apps()
         if tv.apps_from_cache:
-            print(f"The TV didn't answer at {tv.host}; showing the saved list.", file=sys.stderr)
+            print(f"{DEVICE_NOUN[tv.kind].capitalize()} didn't answer at {tv.host}; showing the saved list.",
+                  file=sys.stderr)
         favorites = {a["appId"] for k in cfg["favorites"] if (a := installed_app(cfg, k))}
         for a in sorted(apps, key=lambda a: a["name"].lower()):
             print(f"{'★' if a['appId'] in favorites else ' '} {a['name']:<28} {a['appId']}")
@@ -570,24 +724,47 @@ def run_command(tv, cfg, cmd, rest):
         tv.text(" ".join(rest))
     elif cmd == "on":
         tv.wake()
-        print("TV is on" if tv.wait_until_on() else WAKE_FAILED.format(host=tv.host))
+        if tv.kind == "appletv":
+            print("Apple TV is on" if tv.wait_until_on() else "Sent power on, but the Apple TV still reports it's asleep")
+        else:
+            print("TV is on" if tv.wait_until_on() else WAKE_FAILED.format(host=tv.host))
     elif cmd == "off":
         state = tv.power_state()
+        apple = tv.kind == "appletv"
         if state == "on":
-            print("TV turned off" if tv.turn_off() else TURN_OFF_FAILED)
+            if tv.turn_off():
+                print("Apple TV is asleep" if apple else "TV turned off")
+            else:
+                print(tv.turn_off_failed)
         elif state == "standby":
-            print("TV is already in standby")
+            print("Apple TV is already asleep" if apple else "TV is already in standby")
         else:
-            print(f"TV didn't answer at {tv.host} ({tv.unreachable}); it may already be off")
+            print(f"{'Apple TV' if apple else 'TV'} didn't answer at {tv.host} ({tv.unreachable}); "
+                  "it may already be off")
     elif cmd == "info":
         print(json.dumps(tv.info()["device"], indent=2))
+    elif cmd == "playing":
+        if tv.kind != "appletv":
+            sys.exit("Now playing is only reported by an Apple TV")
+        info = tv.now_playing()
+        if info["state"] in ("idle", "stopped") and not info["title"]:
+            print("Nothing playing")
+        else:
+            where = f"{info['position'] or 0}/{info['total']} s" if info["total"] else ""
+            print(" · ".join(x for x in (info["state"], info["title"], info["subtitle"], where) if x))
     elif cmd == "mirror":
+        if tv.kind == "appletv":
+            sys.exit("Mirroring is only for Samsung TVs (Miracast); Linux can't mirror to an Apple TV")
         start_mirroring()
     elif cmd == "serve":
         import bridge
         bridge.serve(tv, rest)
     elif cmd == "cast":
         import cast
+        if tv.kind == "appletv":
+            import appletv
+            if not appletv.can_cast():
+                sys.exit(appletv.CAST_UNPATCHED)
         done = threading.Event()
 
         def on_status(text):
@@ -595,7 +772,7 @@ def run_command(tv, cfg, cmd, rest):
             if caster.current is None:  # every way a queue ends (finished, stopped, unplayable) clears it
                 done.set()
 
-        caster = cast.Caster(tv.host, on_status)
+        caster = cast.Caster(tv.host, on_status, renderer=tv.renderer())
         try:
             caster.cast(rest)
             try:

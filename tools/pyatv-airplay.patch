@@ -1,0 +1,760 @@
+AirPlay URL playback for tvOS 26 and later, applied to pyatv 0.18.0 by install.sh.
+
+From https://github.com/postlund/pyatv/pull/2846 ("Fix compatibility with latest AirPlay", by
+jlacivita; commit 8848ad3fd9ae46b8eb733bfc667b536a28f04c5a): its library files, without the debug
+prints of every request and response. pyatv is MIT licensed (Copyright (c) 2020 Pierre Ståhl).
+Without it tvOS accepts /play but never fetches the stream and answers /playback-info with 403.
+Drop this file once a pyatv release includes the PR.
+
+The PR also needs biplist, which install.sh installs.
+
+diff --git a/pyatv/protocols/airplay/ap2_session.py b/pyatv/protocols/airplay/ap2_session.py
+--- a/pyatv/protocols/airplay/ap2_session.py
++++ b/pyatv/protocols/airplay/ap2_session.py
+@@ -19,7 +19,7 @@
+ from pyatv.protocols.airplay.auth import verify_connection
+ from pyatv.protocols.airplay.channels import DataStreamChannel, EventChannel
+ from pyatv.settings import InfoSettings
+-from pyatv.support.http import HttpConnection, decode_bplist_from_body, http_connect
++from pyatv.support.http import HttpConnection, decode_plist_body, http_connect
+ from pyatv.support.rtsp import RtspSession
+ from pyatv.support.state_producer import StateProducer
+ 
+@@ -110,7 +110,7 @@
+     async def _setup(self, body: Dict[str, Any]) -> Dict[str, Any]:
+         assert self.rtsp
+         resp = await self.rtsp.setup(body=body)
+-        return decode_bplist_from_body(resp)
++        return decode_plist_body(resp.body)
+ 
+     async def _setup_event_channel(self, address: str) -> None:
+         if self.verifier is None:
+diff --git a/pyatv/protocols/airplay/auth/hap.py b/pyatv/protocols/airplay/auth/hap.py
+--- a/pyatv/protocols/airplay/auth/hap.py
++++ b/pyatv/protocols/airplay/auth/hap.py
+@@ -13,18 +13,17 @@
+ from pyatv.auth.hap_srp import SRPAuthHandler
+ from pyatv.exceptions import InvalidResponseError
+ from pyatv.support import log_binary
+-from pyatv.support.http import HttpConnection, HttpResponse
++from pyatv.support.http import HttpConnection, HttpResponse, HttpRequest
+ 
+ _LOGGER = logging.getLogger(__name__)
+ 
+ _AIRPLAY_HEADERS = {
+-    "User-Agent": "AirPlay/320.20",
++    "User-Agent": "AirPlay/870.14.1",
+     "Connection": "keep-alive",
+     "X-Apple-HKP": 3,
+-    "Content-Type": "application/octet-stream",
++    "Content-Type": "application/octet-stream"
+ }
+ 
+-
+ def _get_pairing_data(resp: HttpResponse):
+     if not isinstance(resp.body, bytes):
+         raise InvalidResponseError(f"got unexpected response: {resp.body}")
+@@ -107,45 +106,82 @@
+         self.http = http
+         self.srp = auth_handler
+         self.credentials = credentials
++        self.pairing_data = None
++        self._sequence = 0
+ 
+     async def verify_credentials(self) -> bool:
+-        """Verify if device is allowed to use AirPlau."""
++        """Verify if device is allowed to use AirPlay."""
++        await self.verify_credentials_seq1()
++        await self.verify_credentials_seq2()
+ 
+-        _, public_key = self.srp.initialize()
++        return True
++    
++    def sequence(self) -> int: 
++        return self._sequence
+ 
+-        resp = await self._send(
+-            {
+-                hap_tlv8.TlvValue.SeqNo: b"\x01",
+-                hap_tlv8.TlvValue.PublicKey: public_key,
+-            }
+-        )
++    async def verify_credentials_seq1(self, request:HttpRequest=None):
++        _, public_key = self.srp.initialize()
+ 
+-        pairing_data = _get_pairing_data(resp)
+-        session_pub_key = pairing_data[hap_tlv8.TlvValue.PublicKey]
+-        encrypted = pairing_data[hap_tlv8.TlvValue.EncryptedData]
++        # copy data from template request
++        data = hap_tlv8.read_tlv(
++            request.body
++            if isinstance(request.body, bytes)
++            else request.body.encode("utf-8")
++        ) if request else {}
++
++        # override critical values
++        data[hap_tlv8.TlvValue.SeqNo] = b"\x01"
++#        data[hap_tlv8.TlvValue.Method] = b"\x07"
++        data[hap_tlv8.TlvValue.PublicKey] = public_key
++
++        response = await self._send(data, copy(request.headers if request else _AIRPLAY_HEADERS))
++
++        self.pairing_data = _get_pairing_data(response)
++    
++    async def verify_credentials_seq2(self, request:HttpRequest=None):
++        session_pub_key = self.pairing_data[hap_tlv8.TlvValue.PublicKey]
++        encrypted = self.pairing_data[hap_tlv8.TlvValue.EncryptedData]
+         log_binary(_LOGGER, "Device", Public=self.credentials.ltpk, Encrypted=encrypted)
+ 
+         encrypted_data = self.srp.verify1(self.credentials, session_pub_key, encrypted)
+-        await self._send(
+-            {
+-                hap_tlv8.TlvValue.SeqNo: b"\x03",
+-                hap_tlv8.TlvValue.EncryptedData: encrypted_data,
+-            }
+-        )
+ 
+-        # TODO: check status code
++        # copy data from template request
++        data = hap_tlv8.read_tlv(
++            request.body
++            if isinstance(request.body, bytes)
++            else request.body.encode("utf-8")
++        ) if request else {}
++
++        data[hap_tlv8.TlvValue.SeqNo] = b"\x03"
++        data[hap_tlv8.TlvValue.EncryptedData] = encrypted_data
++
++        response = await self._send(data, copy(request.headers if request else _AIRPLAY_HEADERS))
++
++        if response.code != 200:
++            raise (f"HAP Verification Sequence 2 failed with %s", response.code)
+ 
+         return True
+ 
+-    async def _send(self, data: Dict[Any, Any]) -> HttpResponse:
+-        headers = copy(_AIRPLAY_HEADERS)
++    async def _send(self, data: Dict[Any, Any], headers=copy(_AIRPLAY_HEADERS)) -> HttpResponse:
++#        data[hap_tlv8.TlvValue.Method] = b"\x07"
++        body = hap_tlv8.write_tlv(data)
+         headers["Content-Type"] = "application/octet-stream"
+-        return await self.http.post(
+-            "/pair-verify", body=hap_tlv8.write_tlv(data), headers=headers
++        headers["Content-Length"] = len(body)
++
++        self._sequence = data[hap_tlv8.TlvValue.SeqNo][0]
++
++        resp = await self.http.post(
++            "/pair-verify", body=body, headers=headers
+         )
+ 
++        if (resp.code == 200):
++            self._sequence = hap_tlv8.read_tlv(resp.body)[hap_tlv8.TlvValue.SeqNo][0]
++
++        return resp
++
+     def encryption_keys(
+         self, salt: str, output_info: str, input_info: str
+     ) -> Tuple[bytes, bytes]:
+         """Return derived encryption keys."""
++
+         return self.srp.verify2(salt, output_info, input_info)
+diff --git a/pyatv/protocols/airplay/auth/legacy.py b/pyatv/protocols/airplay/auth/legacy.py
+--- a/pyatv/protocols/airplay/auth/legacy.py
++++ b/pyatv/protocols/airplay/auth/legacy.py
+@@ -12,7 +12,7 @@
+     PairVerifyProcedure,
+ )
+ from pyatv.protocols.airplay.srp import LegacySRPAuthHandler
+-from pyatv.support.http import HttpConnection, HttpResponse, decode_bplist_from_body
++from pyatv.support.http import HttpConnection, HttpResponse, decode_plist_body
+ 
+ _LOGGER = logging.getLogger(__name__)
+ 
+@@ -53,7 +53,7 @@
+         )
+         self.srp.step1(client_id, pin_code)
+         resp = await self._send_plist(method="pin", user=client_id)
+-        body = decode_bplist_from_body(resp)
++        body = decode_plist_body(resp.body)
+         if not isinstance(body, dict):
+             raise exceptions.ProtocolError(f"exoected dict, got {type(body).__name__}")
+ 
+diff --git a/pyatv/protocols/airplay/channels.py b/pyatv/protocols/airplay/channels.py
+--- a/pyatv/protocols/airplay/channels.py
++++ b/pyatv/protocols/airplay/channels.py
+@@ -6,7 +6,7 @@
+ from abc import ABC
+ import logging
+ from random import randrange
+-from typing import Any, List, NamedTuple, Optional, Tuple
++from typing import Any, List, NamedTuple, Optional, Tuple, Dict
+ 
+ from pyatv.auth.hap_channel import AbstractHAPChannel
+ from pyatv.protocols.airplay.utils import decode_plist_body, encode_plist_body
+@@ -21,6 +21,7 @@
+ )
+ from pyatv.support.packet import defpacket
+ from pyatv.support.variant import read_variant, write_variant
++import asyncio
+ 
+ _LOGGER = logging.getLogger(__name__)
+ 
+@@ -60,6 +61,23 @@
+ class EventChannel(BaseEventChannel):
+     """Connection used to handle the event channel."""
+ 
++    def __init__(self, output_key, input_key):
++        super().__init__(output_key, input_key)
++        self._requests = {}
++        self._responses = {}
++        self._listener = None
++
++    async def responseFor(self, messageId: int) -> Dict:
++        event = asyncio.Event()
++        self._requests[str(messageId)] = event
++        await event.wait()
++        response = self._responses[str(messageId)]
++        del self._responses[str(messageId)]
++        return response
++    
++    def listener(self, listener):
++        self._listener = listener
++        
+     def handle_received(self) -> None:
+         """Handle received data that was put in buffer."""
+         self.buffer: bytes
+@@ -72,6 +90,19 @@
+ 
+                 _LOGGER.debug("Got message on event channel: %s", request)
+ 
++                plist = decode_plist_body(request.body)
++                if plist and 'params' in plist and 'data' in plist['params']:
++                    plist = decode_plist_body(plist['params']['data'])
++                    if plist and 'kind' in plist:
++                        if plist['kind'] == "response":
++                            ID = str(plist["messageID"])
++                            if ID in self._requests:
++                                self._responses[ID] = plist
++                                self._requests[ID].set()
++                    elif plist["type"] == "playbackState":
++                        # Update state
++                        self._listener(plist)
++
+                 # Send a positive response to satisfy the other end of the channel
+                 headers = {
+                     "Content-Length": "0",
+diff --git a/pyatv/protocols/airplay/player.py b/pyatv/protocols/airplay/player.py
+--- a/pyatv/protocols/airplay/player.py
++++ b/pyatv/protocols/airplay/player.py
+@@ -3,10 +3,11 @@
+ import asyncio
+ from contextlib import asynccontextmanager
+ import logging
++import time
++import sys
+ 
+ from pyatv import exceptions
+ from pyatv.protocols.raop.protocols import StreamProtocol, TimingServer
+-from pyatv.support.http import decode_bplist_from_body
+ from pyatv.support.rtsp import RtspSession
+ 
+ _LOGGER = logging.getLogger(__name__)
+@@ -14,10 +15,10 @@
+ PLAY_RETRIES = 3
+ WAIT_RETRIES = 5
+ HEADERS = {
+-    "User-Agent": "AirPlay/550.10",
++    "User-Agent": "AirPlay/870.14.1",
+     "Content-Type": "application/x-apple-binary-plist",
+     "X-Apple-ProtocolVersion": "1",
+-    "X-Apple-Stream-ID": "1",
++    "X-Apple-StreamID": "1",
+ }
+ 
+ 
+@@ -46,24 +47,23 @@
+         retry = 0
+ 
+         async with timing_server(self.rtsp) as server:
+-            while retry < PLAY_RETRIES:
+-                _LOGGER.debug("Starting to play %s", url)
+ 
+-                resp = await self.stream_protocol.play_url(server.port, url, position)
++            # Sometimes AirPlay fails with "Internal Server Error", we
++            # apply a "lets try again"-approach to that
++            while retry < PLAY_RETRIES:
++                _LOGGER.info("Starting to play %s", url)
+ 
+-                # Sometimes AirPlay fails with "Internal Server Error", we
+-                # apply a "lets try again"-approach to that
+-                if resp.code == 500:
++                try:
++                    await self.stream_protocol.play_url(server.port, url, position)
++                except Exception as e:
+                     retry += 1
+-                    _LOGGER.debug(
++                    _LOGGER.warning(
+                         "Failed to stream %s, retry %d of %d", url, retry, PLAY_RETRIES
+                     )
+                     await asyncio.sleep(1.0)
+                     continue
+-
+-                # TODO: Should be more fine-grained
+-                if 400 <= resp.code < 600:
+-                    raise exceptions.AuthenticationError(f"status code: {resp.code}")
++                    # TODO: retry only on 500s, raise exception on 400 to 599 and 501 to 600
++                    # TODO: is this even needed anymore? If so, need to wrap HTTP codes in an exception from airplayv2.py
+ 
+                 await self._wait_for_media_to_end()
+                 return
+@@ -72,6 +72,7 @@
+ 
+     # Poll playback-info to find out if something is playing. It might take
+     # some time until the media starts playing, give it 5 seconds (attempts)
++
+     async def _wait_for_media_to_end(self) -> None:
+         attempts: int = WAIT_RETRIES
+         video_started: bool = False
+@@ -80,39 +81,19 @@
+             # In some cases this call will fail if video was stopped by the sender,
+             # e.g. stopping video via remote control. For now, handle this gracefully
+             # by not spewing an exception.
+-            try:
+-                resp = await self.rtsp.connection.get("/playback-info")
+-            except (RuntimeError, exceptions.ConnectionLostError):
+-                _LOGGER.debug("Connection was lost, assuming video playback stopped")
+-                break
+-
+-            _LOGGER.debug("Playback-info: %s", resp)
++            state = self.stream_protocol.playbackState()
+ 
+-            if resp.body:
+-                parsed = decode_bplist_from_body(resp)
+-            else:
+-                parsed = {}
+-                _LOGGER.debug("Got playback-info response without content")
+-
+-            # In case we got an error, abort with that here
+-            if "error" in parsed:
+-                code = parsed["error"].get("code", "unknown")
+-                domain = parsed["error"].get("domain", "unknown domain")
+-                raise exceptions.PlaybackError(
+-                    f"got error {code} ({domain}) when playing video"
+-                )
++            _LOGGER.debug(f"Playback-info: {state}")
+ 
+-            # duration is only available if something is playing
+-            if "duration" in parsed:
++            if state == "playing":
+                 video_started = True
+-                attempts = -1
+-            else:
+-                video_started = False
+-                if attempts >= 0:
+-                    attempts -= 1
++
++            if state == "stopped":
++                _LOGGER.info("media has stopped")
++                break
+ 
+             if not video_started and attempts < 0:
+-                _LOGGER.debug("media playback ended")
++                _LOGGER.warning("media failed to start")
+                 break
+ 
+             await asyncio.sleep(1)
+diff --git a/pyatv/protocols/raop/protocols/airplayv2.py b/pyatv/protocols/raop/protocols/airplayv2.py
+--- a/pyatv/protocols/raop/protocols/airplayv2.py
++++ b/pyatv/protocols/raop/protocols/airplayv2.py
+@@ -3,7 +3,7 @@
+ import asyncio
+ import logging
+ import plistlib
+-from typing import Optional, Tuple
++from typing import Optional, Tuple, Dict
+ from uuid import uuid4
+ 
+ from pyatv import exceptions
+@@ -13,7 +13,7 @@
+ from pyatv.protocols.airplay.channels import EventChannel
+ from pyatv.protocols.raop.protocols import StreamContext, StreamProtocol
+ from pyatv.support.chacha20 import Chacha20Cipher, Chacha20Cipher8byteNonce
+-from pyatv.support.http import decode_bplist_from_body
++from pyatv.support.http import decode_plist_body
+ from pyatv.support.rtsp import RtspSession
+ 
+ _LOGGER = logging.getLogger(__name__)
+@@ -24,30 +24,36 @@
+ 
+ FEEDBACK_INTERVAL = 2.0  # Seconds
+ 
++SESSION_ID = str(uuid4()).upper()
++
+ HEADERS = {
+-    "User-Agent": "AirPlay/550.10",
++    "User-Agent": "AirPlay/870.14.1",
+     "Content-Type": "application/x-apple-binary-plist",
+     "X-Apple-ProtocolVersion": "1",
+-    "X-Apple-Session-ID": str(uuid4()).lower(),
+-    "X-Apple-Stream-ID": "1",
++    "X-Apple-Session-ID": SESSION_ID,
++    "X-Apple-StreamID": "1",
++    "CSeq": "1"
+ }
+ 
+-
+ class AirPlayV2(StreamProtocol):
+-    """Stream protocol used for AirPlay v1 support."""
++    """Stream protocol used for AirPlay v2 support."""
+ 
+     def __init__(self, context: StreamContext, rtsp: RtspSession) -> None:
+         """Initialize a new AirPlayV2 instance."""
+         super().__init__()
+         self.context = context
+         self.rtsp = rtsp
+-        self.event_channel: Optional[asyncio.BaseTransport] = None
++        self.event_transport: Optional[asyncio.BaseTransport] = None
+         self._verifier: Optional[PairVerifyProcedure] = None
+         self._cipher: Optional[Chacha20Cipher] = None
+         self._feedback_task: Optional[asyncio.Task] = None
+-
++        self._messageID = 1
++        self._playbackState = None
+         self.uuid = str(uuid4())
+ 
++    def _playbackStateListener(self, info):
++        self._playbackState = info
++
+     async def _setup_base(self, timing_server_port: int) -> None:
+         self._verifier = await verify_connection(
+             self.context.credentials, self.rtsp.connection
+@@ -56,7 +62,8 @@
+         setup_resp = await self.rtsp.setup(
+             body={
+                 "deviceID": "AA:BB:CC:DD:EE:FF",
+-                "sessionUUID": str(uuid4()).upper(),
++                "sessionUUID": SESSION_ID,
++                "sessionCorrelationUUID": str(uuid4()).upper(),
+                 "timingPort": timing_server_port,
+                 "timingProtocol": "NTP",
+                 "isMultiSelectAirPlay": True,
+@@ -72,8 +79,7 @@
+                 "statsCollectionEnabled": False,
+             }
+         )
+-        resp = decode_bplist_from_body(setup_resp)
+-        _LOGGER.debug("Setup response body: %s", resp)
++        resp = decode_plist_body(setup_resp.body)
+ 
+         event_port = resp.get("eventPort", 0)
+ 
+@@ -85,7 +91,7 @@
+         transport = None
+         while transport is None:
+             try:
+-                transport, _ = await setup_channel(
++                transport, channel = await setup_channel(
+                     EventChannel,
+                     self._verifier,
+                     self.rtsp.connection.remote_ip,
+@@ -94,15 +100,17 @@
+                     EVENTS_READ_INFO,
+                     EVENTS_WRITE_INFO,
+                 )
+-            except ConnectionRefusedError:
++            except (ConnectionRefusedError, OSError):
+                 retries -= 1
+                 if retries == 0:
+                     raise
+ 
+-                _LOGGER.debug("Connect failed, retrying")
++                _LOGGER.warning("Connect failed, retrying")
+                 await asyncio.sleep(1.0)
+ 
+-        self.event_channel = transport
++        self.event_transport = transport
++        self.event_channel = channel
++        self.event_channel.listener(self._playbackStateListener)
+ 
+     async def setup(self, timing_server_port: int, control_client_port: int) -> None:
+         """To setup connection prior to starting to stream."""
+@@ -145,7 +153,7 @@
+                 ]
+             }
+         )
+-        resp = decode_bplist_from_body(setup_resp)
++        resp = decode_plist_body(setup_resp.body)
+         _LOGGER.debug("Setup stream response: %s", resp)
+ 
+         stream = resp["streams"][0]
+@@ -160,9 +168,9 @@
+         if self._feedback_task:
+             self._feedback_task.cancel()
+             self._feedback_task = None
+-        if self.event_channel:
+-            self.event_channel.close()
+-            self.event_channel = None
++        if self.event_transport:
++            self.event_transport.close()
++            self.event_transport = None
+ 
+     async def start_feedback(self) -> None:
+         """Start to send feedback (if supported and required)."""
+@@ -173,12 +181,12 @@
+         _LOGGER.debug("Starting feedback task")
+         # TODO: Better end condition here to not risk infinite runs?
+         while True:
++            await asyncio.sleep(FEEDBACK_INTERVAL)
+             try:
+                 await self.rtsp.feedback()
+             except Exception as ex:
+                 # Treat feedback as "best effort" and don't raise any errors
+                 _LOGGER.debug("Feedback failed: %s", ex)
+-            await asyncio.sleep(FEEDBACK_INTERVAL)
+ 
+     async def send_audio_packet(
+         self, transport: asyncio.DatagramTransport, rtp_header: bytes, audio: bytes
+@@ -207,67 +215,101 @@
+ 
+         return self.context.rtpseq, packet
+ 
+-    async def play_url(self, timing_server_port: int, url: str, position: float = 0.0):
+-        """Play media from a URL."""
+-        await self._setup_base(timing_server_port)
+-        await self.start_feedback()
+-        await self.rtsp.record()
+-
++    async def send_command(self, data):
+         # Most fields are not needed here, but keeping them for reference
+         body = {
+-            "Content-Location": url,
+-            "Start-Position-Seconds": position,
+-            "uuid": self.uuid,
+-            "streamType": 1,
+-            "mediaType": "file",
+-            "mightSupportStorePastisKeyRequests": True,
+-            "playbackRestrictions": 0,
+-            "secureConnectionMs": 22,
+-            "volume": 1.0,
+-            "infoMs": 122,
+-            "connectMs": 18,
+-            "authMs": 0,
+-            "bonjourMs": 0,
+-            "referenceRestrictions": 3,
+-            "SenderMACAddress": "AA:BB:CC:DD:EE:FF",
+-            "model": "iPhone14,3",
+-            "postAuthMs": 0,
+-            "clientBundleID": "dev.pyatv.GPU",
+-            "clientProcName": "dev.pyatv.GPU",
+-            "osBuildVersion": "20G1116",
+-            "rate": 1.0,
++            "params": {
++                "data": plistlib.dumps(data, fmt=plistlib.FMT_BINARY, sort_keys=False)
++            }
+         }
+ 
+-        # Actually start the stream
+-        resp = await self.rtsp.connection.post(
+-            "/play",
++        # Send the command
++        return await self.rtsp.connection.post(
++            "/command",
+             headers=HEADERS,
+             body=plistlib.dumps(
+                 body, fmt=plistlib.FMT_BINARY  # pylint: disable=no-member
+             ),
+             allow_error=True,
+-        )
++        )        
+ 
+-        # Various commands, most of which are probably not needed for pyatv. Doing them
+-        # anyways, just to be sure things work. Most important command is "/rate" as
+-        # that sets playback rate to 100% (will start paused otherwise).
+-        # TODO: Maybe check some return values?
+-        await self.rtsp.exchange(
+-            "PUT", uri="/setProperty?isInterestedInDateRange", body={"value": True}
+-        )
+-        await self.rtsp.exchange(
+-            "PUT", uri="/setProperty?actionAtItemEnd", body={"value": 0}
+-        )
+-        await self.rtsp.exchange("POST", uri="/rate?value=1.000000")
+-        await self.rtsp.exchange(
+-            "PUT",
+-            uri="/setProperty?forwardEndTime",
+-            body={"value": {"flags": 0, "value": 0, "epoch": 0, "timescale": 0}},
+-        )
+-        await self.rtsp.exchange(
+-            "PUT",
+-            uri="/setProperty?reverseEndTime",
+-            body={"value": {"flags": 0, "value": 0, "epoch": 0, "timescale": 0}},
+-        )
++    async def setup_url_stream(self) -> dict: 
++        """Setup a new stream used for video over http."""
++        if self._verifier is None:
++            raise exceptions.InvalidStateError("base stream not set up")
+ 
++        setup_resp = await self.rtsp.setup(
++            body={
++                    "streams": [
++                        {
++                            'clientUUID': '2E0A9FBA-182D-4E04-8A5D-EC018BD8C408',
++                            'clientTypeUUID': 'A6B27562-B43A-4F2D-B75F-82391E250194',
++                            'channelID': '36:CB:3F:E1:93:B0-RCS-1',
++                            'controlType': 1,
++                            'type': 130
++                        }
++                    ]
++            })
++        
++        resp = decode_plist_body(setup_resp.body)
++        HEADERS["X-Apple-StreamID"] = resp["streams"][0]["streamID"]
+         return resp
++
++    async def play_url(self, timing_server_port: int, url: str, position: float = 0.0) -> int :
++        """Play media from a URL."""        
++        if not self._verifier:
++            await self._setup_base(timing_server_port)
++            await self.start_feedback()
++            
++        await self.rtsp.info()
++        await self.rtsp.record()
++        resp = await self.setup_url_stream()
++
++        item = {
++            "uuid": "30BFEC7B-E49B-47E9-8839-E009D7F9CD7F"
++        }
++
++        resp = await self.send_command({
++            "type": "insertPlayQueueItem",
++            "item": {
++                "uuid": item["uuid"],
++                "mediaType": "file",
++                "Content-Location": url,
++            }
++        })
++
++        await self.send_command({
++            "type": "setProperty",
++            "value": True,
++            "property": "isInterestedInDateRange",
++            "item": item
++        })
++
++        await self.send_command({
++            "type": "setProperty",
++            "value": 1,
++            "property": "actionAtItemEnd"
++        })
++
++        await self.send_command({
++            "type": "setRate",
++            "rate": 1.0,
++        })
++
++        return self._playbackState
++
++    async def playbackInfo(self) -> Dict:
++        id = self._messageID
++        self._messageID += 1
++        await self.send_command({'type': 'playbackInfo', 'kind': 'request', 'messageID': id})
++        response = await self.event_channel.responseFor(id)
++        return response
++    
++    def playbackState(self) -> Dict:
++        if self._playbackState:
++            if 'params' in self._playbackState:
++                return self._playbackState['params']['playbackState']
++            else:
++                return self._playbackState['name']
++        else:
++            return None
+diff --git a/pyatv/protocols/raop/protocols/__init__.py b/pyatv/protocols/raop/protocols/__init__.py
+--- a/pyatv/protocols/raop/protocols/__init__.py
++++ b/pyatv/protocols/raop/protocols/__init__.py
+@@ -98,6 +98,9 @@
+     async def play_url(self, timing_server_port: int, url: str, position: float = 0.0):
+         """Play media from a URL."""
+ 
++    @abstractmethod
++    async def playbackState(self) -> str:
++        """Play media from a URL."""
+ 
+ class TimingServer(asyncio.Protocol):
+     """Basic timing server responding to timing requests."""
+diff --git a/pyatv/support/http.py b/pyatv/support/http.py
+--- a/pyatv/support/http.py
++++ b/pyatv/support/http.py
+@@ -20,6 +20,8 @@
+     cast,
+ )
+ 
++import biplist
++
+ from aiohttp import ClientSession, web
+ from aiohttp.web import middleware
+ from requests.structures import CaseInsensitiveDict
+@@ -218,15 +220,16 @@
+     )
+ 
+ 
+-def decode_bplist_from_body(response: HttpResponse) -> Dict[str, Any]:
+-    """Decode a binary property list in a response."""
+-    if not isinstance(response.body, (bytes, str)):
+-        raise exceptions.ProtocolError(
+-            f"expected bytes or str but got {type(response.body).__name__}"
+-        )
+-
+-    body = response.body
+-    return plistlib.loads(body if isinstance(body, bytes) else body.encode("utf-8"))
++def decode_plist_body(body: Union[str, bytes, Dict[Any, Any]]) -> Any:
++    """Decode a binary plist payload."""
++    try:
++        if isinstance(body, Dict):
++            return body
++        return biplist.readPlistFromString(body)
++#        return plistlib.loads(body if isinstance(body, bytes) else body.encode("utf-8"))
++#    except plistlib.InvalidFileException:
++    except (biplist.InvalidPlistException, biplist.NotBinaryPlistException):
++        return None
+ 
+ 
+ class ClientSessionManager:
+@@ -456,6 +459,7 @@
+ 
+         self.transport.write(self.send_processor(output))
+ 
++
+         pending_request = HttpConnection.PendingRequest(event=asyncio.Event())
+         self._requests.appendleft(pending_request)
+         try:
+@@ -479,6 +483,8 @@
+ 
+         _LOGGER.debug("Got %s response: %s:", response.protocol, response)
+ 
++
++
+         if response.code == 403:
+             raise exceptions.AuthenticationError("not authenticated")
+ 
+diff --git a/pyatv/support/rtsp.py b/pyatv/support/rtsp.py
+--- a/pyatv/support/rtsp.py
++++ b/pyatv/support/rtsp.py
+@@ -13,7 +13,7 @@
+ 
+ from pyatv.protocols.dmap import tags
+ from pyatv.support import async_timeout
+-from pyatv.support.http import HttpConnection, HttpResponse, decode_bplist_from_body
++from pyatv.support.http import HttpConnection, HttpResponse, decode_plist_body
+ from pyatv.support.metadata import MediaMetadata
+ 
+ _LOGGER = logging.getLogger(__name__)
+@@ -107,7 +107,7 @@
+             _LOGGER.debug("Device does not support /info")
+             return {}
+ 
+-        return decode_bplist_from_body(device_info)
++        return decode_plist_body(device_info.body)
+ 
+     async def auth_setup(self) -> HttpResponse:
+         """Send auth-setup message."""

@@ -1,0 +1,17 @@
+<!-- The Siri Remote's play/pause key: a play triangle beside two pause bars, drawn for this project
+     in Lucide's style (24 px grid, 2 px round strokes). -->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <path d="M3 6.5v11a1 1 0 0 0 1.5.86l8-5.5a1 1 0 0 0 0-1.72l-8-5.5A1 1 0 0 0 3 6.5z" />
+  <path d="M16 6v12" />
+  <path d="M21 6v12" />
+</svg>

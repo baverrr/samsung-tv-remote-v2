@@ -1,15 +1,21 @@
-# Samsung TV Remote
+# Samsung TV Remote (and Apple TV Remote)
 
 [![Tests](https://github.com/baverrr/samsung-tv-remote-v2/actions/workflows/tests.yml/badge.svg)](https://github.com/baverrr/samsung-tv-remote-v2/actions/workflows/tests.yml)
 [![CodeQL](https://github.com/baverrr/samsung-tv-remote-v2/actions/workflows/codeql.yml/badge.svg)](https://github.com/baverrr/samsung-tv-remote-v2/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A desktop remote control for Samsung Tizen smart TVs (2016 and later), for Linux. It sends remote keys,
-opens apps, turns the TV on and off, casts photos, videos and music from this PC, and mirrors the screen,
-all over the local network. There's a Qt window for everyday use and a command line for scripts.
+A desktop remote control for Linux, in two versions you switch between in the window:
 
-Built for and tested against a 2021 Samsung AU8000 (Tizen, firmware platform 21_KANTSU2E) on
-Ubuntu 26.04 with KDE Plasma on Wayland.
+- **Samsung TV:** for Samsung Tizen smart TVs (2016 and later). It sends remote keys, opens apps, turns the
+  TV on and off, casts photos, videos and music from this PC, and mirrors the screen.
+- **Apple TV:** for Apple TV boxes (tvOS), with its own window drawn as a silver Siri Remote. It sends remote
+  keys, opens any app on the box, types from this PC's keyboard into the TV as you type, sleeps and wakes it, shows **what's playing** (title, show, artwork
+  and a seek bar), and casts videos and music from this PC over **AirPlay**.
+
+Everything goes over the local network. There's a Qt window for everyday use and a command line for scripts.
+
+Built for and tested against a 2021 Samsung AU8000 (Tizen, firmware platform 21_KANTSU2E) and an
+Apple TV 4K (3rd generation, tvOS 27) on Ubuntu 26.04 with KDE Plasma on Wayland.
 
 <p align="center">
   <img src="docs/remote.png" alt="The remote window: power, status, source, mirror and cast buttons, a d-pad, volume and channel rockers, media keys, app shortcuts and a text box" width="300">
@@ -19,18 +25,51 @@ Ubuntu 26.04 with KDE Plasma on Wayland.
   <img src="docs/apps.png" alt="The Edit apps window: a list of apps with a tick for the five shown on the remote and whether each is installed, buttons to move, remove and add apps, and Save" width="300">
 </p>
 
+<p align="center">
+  <img src="docs/remote-appletv.png" alt="The Apple TV remote: a silver Siri Remote with a power key, a black clickpad, Back, TV, Play/Pause and keyboard keys and a volume key, beside a panel with the status and Control Center key, a now-playing card with artwork, title, episode and a seek bar, skip back, AirPlay cast and skip ahead, a keyboard box showing a text field open on the TV, app shortcuts and the device menu" width="546">
+</p>
+
 > [!IMPORTANT]
 > **Disclaimer.** This is an independent project. It isn't made, endorsed, sponsored or
-> supported by Samsung Electronics. "Samsung", "Tizen" and related names are trademarks of
-> their owners, used here only to say which TVs the remote works with.
+> supported by Samsung Electronics or Apple Inc. "Samsung", "Tizen", "Apple TV", "tvOS", "AirPlay",
+> "Siri" and related names are trademarks of their owners, used here only to say which devices the
+> remote works with.
 >
 > - **Use at your own risk.** The remote is provided as is, without warranty (see the
->   [Terms and Conditions](TERMS.md)). Samsung can change its TVs' software at any time,
->   which may stop some or all features from working.
+>   [Terms and Conditions](TERMS.md)). Samsung and Apple can change their devices' software at any
+>   time, which may stop some or all features from working.
 > - **Use it only with TVs you own or are allowed to control.**
 > - **Cast or mirror only content you have the right to show.**
 
 ## Features
+
+**Both versions**
+
+- **Switch devices in the window:** the device menu at the bottom (**Samsung TV ▾** / **Apple TV ▾**) switches
+  the remote between your TVs, or sets up an Apple TV. The remote opens on the one you used last.
+- **ESP32 bridge:** the same HTTP bridge drives either device (`tv-remote serve --device appletv`).
+
+**Apple TV**
+
+- **Siri Remote window:** switching to the Apple TV swaps the Samsung layout for a silver Siri Remote: power
+  at the top, the black clickpad (its ring clicks up, down, left and right, its centre selects), Back and
+  TV, Play/Pause beside the volume key, and a keyboard key where the real remote has Mute. A panel beside it
+  holds the status, Control Center, what's playing, skip back and ahead, AirPlay cast, the keyboard and the
+  apps. No keys the Apple TV doesn't have (channel, source, info).
+- **Now playing:** title, show and episode or artist, the app, artwork, and a seek bar that follows the box
+  and seeks when you drag it. It hides when nothing is playing.
+- **Apps:** the box reports every app it has, so there's no list to maintain. Pick five for the buttons
+  (**All apps › Edit apps…**); All apps has the rest, like the Apple TV's home screen.
+- **Keyboard:** type on this PC and the text appears in the Apple TV's open text field (a search, a sign-in)
+  as you type, Backspace and paste included. When the TV opens a text field the keyboard box says so, shows
+  what the field already holds and takes your typing; Enter or Esc gives the keys back to the remote, and T
+  or the remote's keyboard key brings you back. The × clears the TV's field.
+- **Power:** sleep (confirmed) and wake over the network. No Wake-on-LAN or MAC address needed.
+- **AirPlay cast:** play videos and music from this PC on the Apple TV, with the same queue, seek bar and
+  controls as TV Cast.
+- **Pairing:** once, from **Set up Apple TV…** or `tv-remote appletv pair`: the TV shows a PIN twice.
+
+**Samsung TV**
 
 - **Remote keys:** d-pad, OK, Back, Home, Menu, volume, channel, mute, source, info and media keys, with
   keyboard shortcuts. Held keys repeat.
@@ -56,6 +95,33 @@ Ubuntu 26.04 with KDE Plasma on Wayland.
 
 ## How it works
 
+```mermaid
+flowchart LR
+    W[Remote window / CLI / ESP32 bridge] --> C{device in use}
+    C -->|samsung| S[tv_remote.TV]
+    C -->|appletv| A[appletv.AppleTV]
+    S -->|WebSocket 8002, REST 8001, WoL| TV[Samsung TV]
+    S -->|DLNA 9197| TV
+    A -->|pyatv: Companion| ATV[Apple TV]
+    A -->|pyatv: AirPlay + MRP| ATV
+    TV & ATV -.->|fetch the cast file| F[cast server :8199]
+```
+
+Both clients offer the same methods (keys, text, apps, power, cast renderer), so the window, the CLI and the
+bridge don't care which device they're driving.
+
+**Apple TV**, through [pyatv](https://pyatv.dev):
+
+| What | How |
+|---|---|
+| Finding it | mDNS (Bonjour). The box is remembered by its identifier, so a new DHCP address doesn't matter: the last address is tried first, then the LAN is searched. |
+| Pairing | Companion, then AirPlay, each with a 4-digit PIN shown on the TV. The credentials are saved in `config.json`. |
+| Keys, apps, typing, power | The Companion protocol: Siri Remote buttons, the box's app list and app launch, its text field, sleep and wake. |
+| Now playing | MRP, tunnelled through AirPlay: the box pushes changes (play, pause, seek, new item); the window's clock runs in between. Artwork is fetched once per item. |
+| AirPlay cast | The same cast server as TV Cast (TCP port **8199**, only to the Apple TV's address); the box is told to play the URL over AirPlay, and pause and seek go through MRP. Before it fetches the file the box syncs its clock with this PC on UDP port **8199**. tvOS 26 and later need an AirPlay fix that isn't in a pyatv release yet, so `install.sh` applies it (`tools/pyatv-airplay.patch`, from [pyatv#2846](https://github.com/postlund/pyatv/pull/2846)). |
+
+**Samsung TV:**
+
 | What | How |
 |---|---|
 | Keys and text | WebSocket on `wss://TV:8002`, channel `samsung.remote.control`. The first connection shows an **Allow** prompt on the TV; the pairing token it returns is saved. |
@@ -72,7 +138,7 @@ Ubuntu 26.04 with KDE Plasma on Wayland.
   day-to-day use has only been on Python 3.14 with KDE Plasma (Wayland).
 - Qt for Python (PySide6) from the distribution:
   `sudo apt install python3-pyside6.qtwidgets python3-pyside6.qtsvg`
-- `websocket-client` (installed into a virtual environment below).
+- `websocket-client`, and `pyatv` for the Apple TV (both installed into a virtual environment below).
 - Optional:
   - `ffmpeg`, to cast HEIC, WebP, GIF, TIFF and AVIF photos.
   - `gnome-network-displays`, for screen mirroring (and Docker, to build the patched copy that mirrors one
@@ -91,7 +157,8 @@ cd ~/.local/share/tv-remote
 `install.sh` installs for the current user only and needs no root. It:
 
 - creates `venv/` in the checkout, which also sees the distribution's PySide6, and installs `websocket-client`
-  into it;
+  and `pyatv` into it, with `tools/pyatv-airplay.patch` applied for AirPlay casting to tvOS 26 and later
+  (it needs `patch`: `sudo apt install patch`; without it the remote works but AirPlay Cast stays off);
 - installs the `tv-remote` launcher to `~/.local/bin`;
 - adds the **TV Remote** menu entry, its "Cast Files to TV…" action and the `tvremote://` link handler;
 - installs the app icon (`tvremote`);
@@ -141,6 +208,13 @@ TV's IP):
 sudo ufw allow from <TV address> to any port 8199 proto tcp
 ```
 
+An Apple TV also needs UDP on the same port, for the clock sync it does before playing (without it, AirPlay
+Cast sits on "Loading"):
+
+```sh
+sudo ufw allow from <Apple TV address> to any port 8199 proto udp
+```
+
 ### Updating
 
 ```sh
@@ -152,8 +226,29 @@ Close and reopen the remote afterwards (launching it again only brings the open 
 
 ## Setup
 
-Settings live in `~/.config/tv-remote/config.json`. Create it with your TV's details; the remote adds the
-pairing token and the app list to it, and saves it readable only by you:
+Settings live in `~/.config/tv-remote/config.json`, saved readable only by you. Set up either device, or
+both; `device` in the file is the one the remote opens with (the last one used).
+
+### Apple TV
+
+Open the remote and choose **Set up Apple TV…** (in the device menu at the bottom, or offered on the first
+start when nothing is set up), or run:
+
+```sh
+tv-remote appletv pair
+```
+
+Pick your Apple TV from the list. It shows a PIN on screen twice: the first allows remote keys and apps, the
+second now playing and AirPlay casting. Type each one in. The remote then switches to the Apple TV.
+
+The Apple TV and this PC must be on the same LAN, and multicast (mDNS) must get between them. To pair again,
+for example after removing the remote under the Apple TV's **Settings › Remotes and Devices**, use **Pair
+Apple TV again…**. The pairing is saved under `appletv` in `config.json`: the box's identifier, name and last
+address, the Companion and AirPlay credentials, and your app buttons (`favorites`, as bundle IDs).
+
+### Samsung TV
+
+Create `config.json` with your TV's details; the remote adds the pairing token and the app list to it:
 
 ```json
 {
@@ -167,7 +262,7 @@ pairing token and the app list to it, and saves it readable only by you:
 - **`mac`:** the TV's MAC address, used for Wake-on-LAN.
 - **`name`:** what the TV calls this remote.
 
-Until `host` is set, the remote says so instead of starting.
+Until `host` is set (or an Apple TV is paired), the remote says how to set one up instead of starting.
 
 **If the TV moves to Wi-Fi** (its cable is out, or it was switched over), the remote finds it there by
 itself. Once it has reached the TV, it saves the TV's ID (`tv_id`), Wi-Fi MAC (`wifi_mac`) and Wi-Fi
@@ -212,6 +307,10 @@ the remote, or the remote and the cast window.
 | F11 | Full screen |
 | ? | List the shortcuts |
 
+On the Apple TV remote, Enter is Select, H is TV (home), Space and P are Play/Pause, [ and ] skip back
+and ahead, C opens Control Center, and T goes to the keyboard, which types on the TV as you type. M, Page
+Up/Down, S and I do nothing (the Siri Remote has no such keys).
+
 ### Command line
 
 ```sh
@@ -224,6 +323,18 @@ tv-remote info                      # the TV's device details (JSON)
 tv-remote cast ~/Pictures/Trip      # cast files or folders; Ctrl+C stops
 tv-remote mirror                    # start screen mirroring
 tv-remote serve                     # run the ESP32 bridge (port 8198); --token prints its token
+```
+
+Every command drives the device used last; `--device samsung` or `--device appletv` picks one. For the
+Apple TV:
+
+```sh
+tv-remote appletv scan              # Apple TVs on the network
+tv-remote appletv pair              # pair with one (type the PINs it shows)
+tv-remote --device appletv key select menu play_pause   # KEY_* names work too
+tv-remote --device appletv launch plex
+tv-remote --device appletv playing  # what's on: state, title, show, position
+tv-remote --device appletv cast ~/Videos/trip.mp4       # AirPlay; videos and music
 ```
 
 Errors come back as one line saying what failed, e.g. "Couldn't reach the TV at …" or "Netflix isn't
@@ -285,6 +396,11 @@ them plain HTTP on the LAN instead and does the TV side itself:
 | `POST /power/off` | Presses power until the TV reports standby, in the background (`202`); pressing again meanwhile does nothing |
 | `GET /status` | `{"power": "on"}`, `"standby"` or `"off"` |
 
+The bridge drives the device in use when it starts; run it with `--device appletv` (or `samsung`) to fix one.
+For an Apple TV, `/key/` also takes its own names (`select`, `menu`, `play_pause`, `control_center`), a key with
+no Apple TV equivalent (mute, source, info) answers `400`, `/launch/` takes a bundle ID (`com.netflix.Netflix`) or an app name, and
+`/power/on` wakes it over the network.
+
 Replies are JSON: `{"ok": true, ...}`, or `{"error": "..."}` with `400` (bad key name), `401` (token),
 `403` (address not allowed), `404` (unknown request or app) or `502` (the TV didn't answer or refused).
 
@@ -337,23 +453,25 @@ which turns on TVs that ignore Wake-on-LAN.
 
 | File | What it is |
 |---|---|
-| `tv_remote.py` | TV client (WebSocket keys, REST apps and power, Wake-on-LAN), config, CLI, entry point |
-| `remote_qt.py` | The Qt (PySide6) remote and cast windows, design tokens and stylesheet |
-| `cast.py` | DLNA casting: the file server, the renderer client and the play queue |
+| `tv_remote.py` | Samsung TV client (WebSocket keys, REST apps and power, Wake-on-LAN), config, device choice, CLI, entry point |
+| `appletv.py` | Apple TV client on pyatv (Companion, MRP, AirPlay), pairing, discovery, the AirPlay cast renderer |
+| `remote_qt.py` | The Qt (PySide6) remotes (Samsung and Apple TV), cast window, Apple TV setup, design tokens and stylesheet |
+| `cast.py` | Casting: the file server, the DLNA renderer client and the play queue (any renderer) |
 | `bridge.py` | The ESP32 bridge: `tv-remote serve`'s HTTP server |
 | `mirror_audio.py` | PipeWire audio routing while mirroring (standard library only, runs as a user service) |
-| `test_gui.py`, `test_bridge.py`, `test_mirror_audio.py` | Tests (the TV and PipeWire are faked; nothing touches the network) |
+| `test_gui.py`, `test_appletv.py`, `test_bridge.py`, `test_mirror_audio.py` | Tests (the TV, the Apple TV and PipeWire are faked; nothing touches the network) |
 | `install.sh`, `packaging/` | Per-user install: launcher, menu entry, icon, audio and bridge service templates |
 | `tools/screenshots.py` | Re-renders the screenshots in `docs/` offscreen |
 | `tools/build-gnd.sh`, `tools/gnd-window-resize.patch` | Builds GNOME Network Displays patched for one-window mirroring |
-| `docs/` | README screenshots (`*.png`), the mirroring diagram (`mirroring.svg`) and the ESP32 remote screen (`esp32-remote.svg`) |
-| `icons/` | Lucide icons used by the windows |
+| `tools/pyatv-airplay.patch` | pyatv's unreleased AirPlay fix for tvOS 26+ ([pyatv#2846](https://github.com/postlund/pyatv/pull/2846)), applied by `install.sh` |
+| `docs/` | README screenshots (`*.png`, including `remote-appletv.png`), the mirroring diagram (`mirroring.svg`) and the ESP32 remote screen (`esp32-remote.svg`) |
+| `icons/` | Lucide icons used by the windows, and the Siri Remote's play/pause key (`play-pause.svg`, drawn for this project) |
 | `tv-remote.svg` | App icon |
 
 ## Development
 
 ```sh
-./venv/bin/pip install pytest pytest-qt ruff   # once
+./venv/bin/pip install pytest pytest-qt ruff   # once (pyatv comes with install.sh)
 QT_QPA_PLATFORM=offscreen ./venv/bin/python -I -m pytest -q
 ./venv/bin/ruff check .
 pyright                                        # uses pyrightconfig.json
@@ -377,7 +495,16 @@ audio, and they use a temporary config.
 - **One-window mirroring needs the patched build:** the system GNOME Network Displays freezes when a shared
   window is resized (see [Mirroring one window](#mirroring-one-window)). Whole-screen mirroring works with
   either.
-- **One TV:** settings hold a single TV.
+- **One TV of each kind:** settings hold one Samsung TV and one Apple TV.
+- **Apple TV: AirPlay Cast relies on a patched pyatv** until a pyatv release includes
+  [pyatv#2846](https://github.com/postlund/pyatv/pull/2846). If the patch isn't applied (for example a venv
+  set up by hand), the AirPlay cast button is greyed out and says why; run `install.sh` again.
+- **Apple TV: no photos over AirPlay.** pyatv streams video and audio only, so AirPlay Cast leaves photos out
+  (and says so). Videos must be in a format the Apple TV plays (MP4/MOV with H.264 or HEVC; not MKV).
+- **Apple TV: no mute or mirroring.** Mute isn't in the protocols the box offers (the Siri Remote mutes the TV
+  over HDMI-CEC or IR), and Linux can't mirror the screen to an Apple TV.
+- **Apple TV: typing replaces** the text in the box's open text field rather than adding to it: the keyboard
+  sends the whole text after each pause in typing (120 ms), which is what tvOS's remote protocol takes.
 
 ## License
 
@@ -386,7 +513,7 @@ audio, and they use a temporary config.
 
 ## Privacy and terms
 
-The remote collects nothing and talks only to your TV on your own network. What it keeps on your
+The remote collects nothing and talks only to your TV and Apple TV on your own network. What it keeps on your
 computer, and what goes over the network, is in the [Privacy Policy](PRIVACY.md). Use of the app
 is covered by the [Terms and Conditions](TERMS.md).
 

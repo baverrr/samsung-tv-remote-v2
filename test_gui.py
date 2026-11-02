@@ -21,8 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pytest
 from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import QApplication, QToolButton
+from PySide6.QtWidgets import QApplication, QFrame, QToolButton
 
+import appletv
 import remote_qt as rq
 import tv_remote as core
 
@@ -234,6 +235,10 @@ def contrast(a, b):
     ("focus", "raised", 3), ("focus", "body", 3), ("focus", "body_top", 3), ("focus", "accent_fill", 3),
     ("focus", "danger", 3), ("focus", "hover", 3), ("focus", "inset", 3), ("focus", "pressed", 3),
     ("focus", "accent_hover", 3), ("focus", "accent_down", 3), ("focus", "danger_hover", 3), ("focus", "bg", 3),
+    # the Siri Remote: black keys on silver, their icons and the focus ring on every key state
+    ("key", "siri", 3), ("key", "siri_top", 3), ("siri_edge", "bg", 3), ("key_fg", "key", 4.5),
+    ("key_fg", "key_hover", 4.5), ("key_fg", "key_down", 4.5), ("key_dot", "key", 3), ("focus", "key", 3),
+    ("focus", "key_hover", 3), ("focus", "key_down", 3),
 ])
 def test_contrast(fg, bg, need):
     assert contrast(fg, bg) >= need, f"{fg} on {bg}: {contrast(fg, bg):.2f} < {need}"
@@ -798,6 +803,9 @@ def test_seek_asks_the_tv_for_its_position_once(monkeypatch, tmp_path):
 
 class ScriptedTV:
     """A renderer whose GetTransportInfo replies follow a script (a state, or an exception to raise)."""
+
+    kinds = frozenset({"image", "video", "audio"})
+    error = None
 
     def __init__(self, states, position=(5, 100)):
         self.states, self.pos, self.loaded = list(states), position, []
@@ -1608,9 +1616,10 @@ def test_an_unset_tv_asks_to_be_set_up(config, monkeypatch, cfg):
         config.unlink()  # a new user: no config file at all
     else:
         config.write_text(json.dumps(cfg))
-    with pytest.raises(core.ConfigError, match=r"^No TV is set up yet\. Put your TV's address in "):
-        core.load_config()
-    with pytest.raises(SystemExit, match="No TV is set up yet"):
+    cfg = core.load_config()  # loads, so the window can offer to set up an Apple TV instead
+    with pytest.raises(core.ConfigError, match=r"^No Samsung TV is set up yet\. Put your TV's address in "):
+        core.pick_device(cfg)
+    with pytest.raises(SystemExit, match="No Samsung TV is set up yet"):
         core.cli(["key", "mute"])
 
 
@@ -1890,3 +1899,214 @@ def test_edit_apps_is_reached_from_the_all_apps_menu(qtbot, remote):
     next(a for a in menu.actions() if a.text() == "Edit apps…").trigger()
     assert remote.apps_dialog is not None and remote.apps_dialog.isVisible()
     remote.apps_dialog.reject()
+
+
+# -- the Apple TV remote
+
+ATV = {"identifier": "TEST-ATV-ID", "name": "Den", "host": "192.0.2.60",
+       "credentials": {"companion": "test-companion", "airplay": "test-airplay"},
+       "apps": [{"appId": "com.netflix.Netflix", "name": "Netflix"}, {"appId": "com.plexapp.plex", "name": "Plex"}]}
+KEYS_APPLE = [(Qt.Key.Key_Up, "KEY_UP"), (Qt.Key.Key_Return, "KEY_ENTER"), (Qt.Key.Key_Escape, "KEY_RETURN"),
+              (Qt.Key.Key_H, "KEY_HOME"), (Qt.Key.Key_Plus, "KEY_VOLUP"), (Qt.Key.Key_Space, "KEY_PLAY"),
+              (Qt.Key.Key_P, "KEY_PLAY"), (Qt.Key.Key_BracketLeft, "KEY_REWIND"),
+              (Qt.Key.Key_BracketRight, "KEY_FF"), (Qt.Key.Key_C, "KEY_MENU")]
+
+
+@pytest.fixture
+def atv_sent():
+    """Keys and text the Apple TV remote would have sent."""
+    return []
+
+
+@pytest.fixture
+def apple(qtbot, qapp, config, monkeypatch, atv_sent):
+    """The Apple TV remote, with the box stubbed."""
+    cfg = json.loads(config.read_text())
+    config.write_text(json.dumps({**cfg, "device": "appletv", "appletv": ATV}))
+    log = atv_sent
+    monkeypatch.setattr(appletv.AppleTV, "power_state", lambda self: "on")
+    monkeypatch.setattr(appletv.AppleTV, "connect", lambda self: self.on_event("connected", None))
+    monkeypatch.setattr(appletv.AppleTV, "scan_apps", lambda self: self.cfg["apps"])
+    monkeypatch.setattr(appletv.AppleTV, "key", lambda self, k: log.append(k))
+    monkeypatch.setattr(appletv.AppleTV, "text", lambda self, s: log.append("TEXT:" + s))
+    monkeypatch.setattr(appletv, "can_cast", lambda: True)  # pyatv with tools/pyatv-airplay.patch
+    qapp.setPalette(rq.palette())
+    qapp.setStyleSheet(rq.stylesheet())
+    w = rq.RemoteWindow(core.load_config())
+    qtbot.addWidget(w)
+    qapp.installEventFilter(w)
+    w.show()
+    qtbot.waitExposed(w)
+    qtbot.waitUntil(lambda: w.status_text.text().startswith("Connected"))
+    yield w
+    qapp.removeEventFilter(w)
+    w.tv.close()
+
+
+def test_the_device_used_last_opens(apple):
+    assert apple.apple and apple.windowTitle() == "Apple TV Remote"
+    assert isinstance(apple.tv, appletv.AppleTV)
+
+
+def test_apple_layout_is_the_siri_remote(apple):
+    keys = set(apple.key_buttons)
+    assert {"KEY_UP", "KEY_ENTER", "KEY_RETURN", "KEY_HOME", "KEY_PLAY", "KEY_VOLUP", "KEY_VOLDOWN", "KEY_REWIND",
+            "KEY_FF", "KEY_MENU"} <= keys
+    assert not keys & {"KEY_SOURCE", "KEY_CHUP", "KEY_CHDOWN", "KEY_MUTE", "KEY_INFO", "KEY_EXIT", "KEY_PAUSE"}
+    names = {b.accessibleName() for b in apple.findChildren(QToolButton)}
+    assert "Mirror this screen to the TV" not in names  # no Miracast to an Apple TV
+    assert "Play videos or music from this PC on the Apple TV" in names
+    remote = apple.findChild(QFrame, "siri")
+    assert remote is not None and isinstance(apple.dpad, rq.ClickPad)
+    on_remote = {b.accessibleName() for b in remote.findChildren(QToolButton)}
+    assert {"Power", "Back", "TV / Home", "Play / pause", "Volume up", "Volume down", "Keyboard: type on the Apple TV",
+            "OK"} <= on_remote
+    assert apple.power_btn in remote.findChildren(QToolButton)
+
+
+@pytest.mark.parametrize("qt_key, tv_key", KEYS_APPLE, ids=[k.name for k, _ in KEYS_APPLE])
+def test_apple_shortcut(qtbot, apple, atv_sent, qt_key, tv_key):
+    qtbot.keyClick(apple, qt_key)
+    expect(qtbot, atv_sent, [tv_key])
+
+
+@pytest.mark.parametrize("qt_key", [Qt.Key.Key_M, Qt.Key.Key_PageUp, Qt.Key.Key_S, Qt.Key.Key_I])
+def test_samsung_only_shortcuts_do_nothing_on_apple_tv(qtbot, apple, atv_sent, qt_key):
+    qtbot.keyClick(apple, qt_key)
+    expect(qtbot, atv_sent, [])
+
+
+def test_the_keyboard_key_opens_the_keyboard(qtbot, apple):
+    key = next(b for b in apple.findChildren(QToolButton) if b.accessibleName() == "Keyboard: type on the Apple TV")
+    key.click()
+    qtbot.waitUntil(apple.entry.hasFocus)
+
+
+def test_typing_goes_to_the_apple_tv_as_you_type(qtbot, apple, atv_sent, monkeypatch):
+    monkeypatch.setattr(appletv.AppleTV, "typed", lambda self: "")
+    apple.post("keyboard", True)  # a search box opened on the box: the keyboard takes over
+    qtbot.waitUntil(apple.entry.hasFocus)
+    assert apple.keyboard.state.text() == "Text field open"
+    qtbot.keyClicks(apple.entry, "sev")
+    expect(qtbot, atv_sent, ["TEXT:sev"])  # one request for a burst of typing
+    qtbot.keyClick(apple.entry, Qt.Key.Key_Backspace)
+    expect(qtbot, atv_sent, ["TEXT:sev", "TEXT:se"])
+    qtbot.keyClick(apple.entry, Qt.Key.Key_Return)  # back to the remote keys; nothing more to send
+    assert not apple.entry.hasFocus()
+    qtbot.keyClick(apple, Qt.Key.Key_Up)
+    expect(qtbot, atv_sent, ["TEXT:sev", "TEXT:se", "KEY_UP"])
+
+
+def test_an_opening_field_shows_its_text_and_closing_gives_the_keys_back(qtbot, apple, atv_sent, monkeypatch):
+    monkeypatch.setattr(appletv.AppleTV, "typed", lambda self: "the night")
+    apple.post("keyboard", True)
+    qtbot.waitUntil(lambda: apple.entry.text() == "the night")
+    apple.post("keyboard", False)
+    qtbot.waitUntil(lambda: apple.keyboard.state.text() == "No text field open")
+    assert apple.entry.text() == "" and not apple.entry.hasFocus()
+    expect(qtbot, atv_sent, [])
+
+
+def test_clearing_the_keyboard_clears_the_tv_field(qtbot, apple, atv_sent, monkeypatch):
+    monkeypatch.setattr(appletv.AppleTV, "typed", lambda self: "abc")
+    apple.post("keyboard", True)
+    qtbot.waitUntil(lambda: apple.entry.text() == "abc")
+    next(b for b in apple.findChildren(QToolButton) if b.accessibleName() == "Clear the Apple TV's text field").click()
+    expect(qtbot, atv_sent, ["TEXT:"])
+    assert apple.entry.text() == ""
+
+
+def test_apple_text(qtbot, apple, atv_sent):
+    qtbot.keyClick(apple, Qt.Key.Key_T)
+    qtbot.keyClicks(apple.entry, "severance")
+    qtbot.keyClick(apple.entry, Qt.Key.Key_Return)
+    expect(qtbot, atv_sent, ["TEXT:severance"])
+
+
+def test_apple_app_buttons_use_bundle_ids(apple):
+    names = {b.text() for b in apple.findChildren(QToolButton)}
+    assert "Netflix" in names  # a default favorite the box has
+    assert "Plex" not in names  # in All apps
+
+
+NOW = {"state": "playing", "title": "Who Is Alive?", "subtitle": "Severance · S2 E3", "album": "", "position": 60,
+       "total": 3000, "app": "TV", "hash": "h"}
+
+
+def test_now_playing_card_follows_the_box(qtbot, apple):
+    card = apple.now_card
+    assert card is not None and card.isHidden()
+    apple.post("now_playing", NOW)
+    qtbot.waitUntil(card.isVisible)
+    assert card.title.text() == "Who Is Alive?"
+    assert card.subtitle.text() == "Severance · S2 E3 · TV"
+    assert card.total.text() == "50:00" and card.seek.maximum() == 3000
+    assert 60 <= card.position() < 62  # the clock runs between reports while it plays
+    apple.post("now_playing", {**NOW, "state": "paused"})
+    qtbot.waitUntil(lambda: card.subtitle.text().startswith("Paused"))
+    apple.post("artwork", b"not an image")  # falls back to the placeholder, no crash
+    apple.post("now_playing", {**NOW, "state": "idle"})
+    qtbot.waitUntil(card.isHidden)
+
+
+def test_now_playing_seek(qtbot, apple, monkeypatch):
+    seeks = []
+    monkeypatch.setattr(appletv.AppleTV, "seek", lambda self, s: seeks.append(s))
+    apple.post("now_playing", NOW)
+    qtbot.waitUntil(apple.now_card.isVisible)
+    apple.now_card.seek.setValue(1200)
+    apple.now_card.seek_released()
+    qtbot.waitUntil(lambda: seeks == [1200])
+
+
+def test_device_menu_switches_and_offers_setup(qtbot, apple):
+    apple.fill_device_menu(apple.device_menu)
+    actions = {a.text(): a for a in apple.device_menu.actions() if a.text()}
+    assert actions["Apple TV"].isChecked() and actions["Samsung TV"].isEnabled()
+    assert "Pair Apple TV again…" in actions
+    with qtbot.waitSignal(apple.switch_device) as sig:
+        actions["Samsung TV"].trigger()
+    assert sig.args == ["samsung"]
+
+
+def test_samsung_menu_offers_apple_tv_setup(remote):
+    remote.fill_device_menu(remote.device_menu)
+    texts = [a.text() for a in remote.device_menu.actions() if a.text()]
+    assert texts == ["Samsung TV", "Apple TV (not set up)", "Set up Apple TV…"]
+
+
+def test_apple_edit_apps_has_no_add_or_remove(qtbot, apple):
+    apple.edit_apps()
+    dialog = apple.apps_dialog
+    assert dialog is not None
+    qtbot.waitUntil(lambda: dialog.checked is not None)
+    assert dialog.remove.isHidden()
+    rows = [dialog.list.item(i).text() for i in range(dialog.list.count())]
+    assert rows == ["Netflix  ·  Installed", "Plex  ·  Installed"]
+    dialog.reject()
+
+
+def test_airplay_cast_is_off_without_the_pyatv_fix(apple, monkeypatch):
+    def cast_button():
+        row = apple._apple_media_row()  # skip back · AirPlay cast · skip ahead
+        return row.itemAt(1).widget()
+    assert cast_button().isEnabled()
+    monkeypatch.setattr(appletv, "can_cast", lambda: False)
+    b = cast_button()
+    assert not b.isEnabled() and "pyatv-airplay.patch" in b.toolTip()
+
+
+def test_cli_cast_to_an_apple_tv_needs_the_pyatv_fix(config, monkeypatch):
+    cfg = json.loads(config.read_text())
+    config.write_text(json.dumps({**cfg, "device": "appletv", "appletv": ATV}))
+    monkeypatch.setattr(appletv, "can_cast", lambda: False)
+    with pytest.raises(SystemExit, match="pyatv-airplay.patch"):
+        core.cli(["cast", "a.mp4"])
+
+
+def test_airplay_cast_window_has_no_photos(qtbot, apple):
+    apple.open_cast()
+    win = apple.cast_window
+    assert win is not None
+    assert win.windowTitle() == "AirPlay Cast" and not win.photos_btn.isEnabled() and win.auto.isHidden()
+    win.close()
