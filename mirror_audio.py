@@ -81,10 +81,10 @@ def string_list(cfg, key):
 
 def load_config():
     try:
-        user = json.loads(CONFIG.read_text())
+        user = json.loads(CONFIG.read_text(encoding="utf-8"))
     except FileNotFoundError:
         CONFIG.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n")
+        CONFIG.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n", encoding="utf-8")
         user = {}
     except json.JSONDecodeError as e:
         log(f"{CONFIG} is not valid JSON ({e}); using the built-in lists")
@@ -151,7 +151,7 @@ def local_output(sinks, preferred):
 def load_state():
     """{"active_sink": ..., "previous": ...} while mirroring, else {}."""
     try:
-        state = json.loads(STATE.read_text())
+        state = json.loads(STATE.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     except (OSError, json.JSONDecodeError) as e:
@@ -167,7 +167,7 @@ def save_state(state):
     # Written to a temp file and renamed, so a crash mid-write can't leave a truncated file.
     STATE.parent.mkdir(parents=True, exist_ok=True)
     tmp = STATE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state))
+    tmp.write_text(json.dumps(state), encoding="utf-8")
     tmp.replace(STATE)
 
 

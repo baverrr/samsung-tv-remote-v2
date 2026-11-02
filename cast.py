@@ -9,6 +9,7 @@ become their first frame; capped at 3840x2160).
 
 import html
 import http.client
+import os
 import re
 import secrets
 import shutil
@@ -22,6 +23,21 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+WINDOWS = os.name == "nt"
+
+
+class ExclusiveHTTPServer(ThreadingHTTPServer):
+    """A ThreadingHTTPServer whose port is its own. On Windows, SO_REUSEADDR (which HTTPServer sets) lets
+    a second server bind a port that's in use, so "port in use" would never be reported; an exclusive
+    bind there makes a taken port fail, as it does elsewhere."""
+
+    allow_reuse_address = not WINDOWS
+
+    def server_bind(self):
+        if WINDOWS:
+            self.socket.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_EXCLUSIVEADDRUSE"), 1)  # noqa: B009
+        super().server_bind()
 
 PORT = 8199  # fixed, so a firewall rule can allow it (ufw only lets the TV reach this one)
 DMR_PORT = 9197  # from the TV's SSDP LOCATION http://TV:9197/dmr
@@ -126,6 +142,7 @@ class MediaServer:
             self.ip = s.getsockname()[0]
             self.allowed = {s.getpeername()[0]}  # the TV's address (tv_host may be a name)
         self.files = {}  # token -> (path, mime)
+        self.leftovers = []  # converted copies Windows wouldn't delete yet (still being sent)
         self.read_error: str | None = None  # why the published file couldn't be streamed, until the next revoke()
         self.lock = threading.Lock()
         self.tmp = Path(tempfile.mkdtemp(prefix="tv-cast-"))
@@ -183,7 +200,7 @@ class MediaServer:
                                 server.read_error = err
 
         try:
-            self.httpd = ThreadingHTTPServer((self.ip, PORT), Handler)
+            self.httpd = ExclusiveHTTPServer((self.ip, PORT), Handler)
         except OSError as e:
             # No fallback to another port: the firewall only lets the TV reach PORT, so the TV couldn't
             # fetch from it and the file would look unplayable.
@@ -211,7 +228,8 @@ class MediaServer:
                                 "scale='min(3840,iw)':'min(2160,ih)':force_original_aspect_ratio=decrease",
                                 "-q:v", "2", str(out)], capture_output=True, text=True, timeout=60, check=False)
         except FileNotFoundError:
-            raise RuntimeError(f"showing {src.suffix} photos needs ffmpeg: sudo apt install ffmpeg") from None
+            how = "winget install ffmpeg" if WINDOWS else "sudo apt install ffmpeg"
+            raise RuntimeError(f"showing {src.suffix} photos needs ffmpeg: {how}") from None
         except subprocess.TimeoutExpired:
             raise RuntimeError("converting it to JPEG took over 60 s") from None
         if r.returncode:
@@ -220,13 +238,20 @@ class MediaServer:
         return out
 
     def revoke(self):
-        """Invalidate every published URL (and delete converted copies); downloads in progress finish."""
+        """Invalidate every published URL (and delete converted copies); downloads in progress finish.
+        Windows won't delete a file that's still being sent: those copies go at the next revoke, or with
+        the whole folder at close()."""
         with self.lock:
             entries, self.files = list(self.files.values()), {}
             self.read_error = None
-        for path, _ in entries:
+            self.leftovers, leftovers = [], [*self.leftovers, *(p for p, _ in entries)]
+        for path in leftovers:
             if path.parent == self.tmp:
-                path.unlink(missing_ok=True)
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    with self.lock:
+                        self.leftovers.append(path)
 
     def close(self):
         self.httpd.shutdown()

@@ -6,6 +6,7 @@ event loop thread, key table, app lists, pairing flow and AirPlay renderer run f
 import asyncio
 import http.client
 import json
+import os
 import socket
 import threading
 import time
@@ -488,7 +489,8 @@ def test_pairing_saves_both_credentials_and_switches_to_the_apple_tv(monkeypatch
     assert saved["device"] == "appletv" and saved["host"] == HOST  # the Samsung settings stay
     assert saved["appletv"]["identifier"] == "NEW-ID" and saved["appletv"]["name"] == "Living Room"
     assert saved["appletv"]["credentials"] == {"companion": "new-creds", "airplay": "new-creds"}
-    assert (config.stat().st_mode & 0o777) == 0o600
+    if os.name != "nt":  # Windows has no such modes: the user profile keeps %APPDATA% private
+        assert (config.stat().st_mode & 0o777) == 0o600
 
 
 def test_pairing_another_box_drops_the_old_boxs_credentials(monkeypatch, config):

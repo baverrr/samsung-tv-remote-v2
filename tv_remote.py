@@ -33,10 +33,20 @@ import websocket
 # The launcher runs python -I (no script dir on sys.path), so add it for remote_qt.py and cast.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "tv-remote" / "config.json"
+WINDOWS = os.name == "nt"
+
+
+def config_dir():
+    """Where the settings live: %APPDATA%\\tv-remote on Windows, $XDG_CONFIG_HOME/tv-remote elsewhere."""
+    if WINDOWS:
+        return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "tv-remote"
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "tv-remote"
+
+
+CONFIG = config_dir() / "config.json"
 # Stand-ins for a TV that isn't set up yet (addresses reserved for documentation: RFC 5737, RFC 7042).
 UNSET_HOST, UNSET_MAC = "192.0.2.10", "00:00:5e:00:53:01"
-DEFAULTS = {"host": UNSET_HOST, "mac": UNSET_MAC, "name": "Linux Remote", "token": None, "apps": [],
+DEFAULTS = {"host": UNSET_HOST, "mac": UNSET_MAC, "name": "Windows Remote" if WINDOWS else "Linux Remote", "token": None, "apps": [],
             "device": "samsung"}
 DEVICES = {"samsung": "Samsung TV", "appletv": "Apple TV"}  # "device" in the config: the one in use
 # Popular apps and their publicly reported Tizen app IDs (community lists; Samsung publishes none). Some
@@ -116,7 +126,7 @@ def describe_error(e):
 def load_config():
     cfg = dict(DEFAULTS)
     try:
-        user = json.loads(CONFIG.read_text())
+        user = json.loads(CONFIG.read_text(encoding="utf-8"))
     except FileNotFoundError:
         user = {}
     except json.JSONDecodeError as e:
@@ -212,10 +222,18 @@ def save_config(cfg):
         CONFIG.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         tmp = CONFIG.with_suffix(".tmp")
         tmp.unlink(missing_ok=True)  # a leftover could have looser permissions; O_CREAT keeps those
-        # Created 0600, so the pairing token is never readable by others, not even until a chmod.
-        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
+        # Created 0600, so the pairing token is never readable by others, not even until a chmod. (Windows
+        # ignores the mode: there the user profile's own permissions keep %APPDATA% private.)
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as f:
             f.write(json.dumps(cfg, indent=2))
-        tmp.replace(CONFIG)
+        for attempt in range(5):
+            try:
+                tmp.replace(CONFIG)
+                return
+            except PermissionError:  # Windows: antivirus or the search indexer has the file open for a moment
+                if not WINDOWS or attempt == 4:
+                    raise
+                time.sleep(0.1)
 
 
 # -- which apps the remote shows: "favorites" (its buttons, in order) and "menu_apps" (All apps) hold app
@@ -602,8 +620,16 @@ def find_app(apps, name):
     return (exact or [a for a in apps if name in a["name"].lower()] or [None])[0]
 
 
+MIRROR_HINT = ("Pick the TV in Windows' Cast panel, then Allow on the TV" if WINDOWS else
+               "Pick the TV in Network Displays, then Allow on the TV")
+
+
 def start_mirroring():
-    """Opens GNOME Network Displays (Miracast over Wi-Fi Direct); the TV is picked there."""
+    """Opens GNOME Network Displays (Miracast over Wi-Fi Direct); the TV is picked there. On Windows,
+    which has Miracast built in (sound included), it opens Windows' own Cast panel (Win+K) instead."""
+    if WINDOWS:
+        press_win_k()
+        return
     # A local build patched to survive a shared window being resized, if there is one (tools/build-gnd.sh)
     patched = Path.home() / ".local" / "opt" / "gnd" / "bin" / "gnome-network-displays"
     exe = str(patched) if os.access(patched, os.X_OK) else shutil.which("gnome-network-displays")
@@ -612,8 +638,20 @@ def start_mirroring():
     subprocess.Popen([exe], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def press_win_k():
+    """Win+K: opens the Cast panel on Windows 10 and 11."""
+    import ctypes
+    user32 = ctypes.windll.user32  # pyright: ignore[reportAttributeAccessIssue] - Windows only
+    vk_lwin, vk_k, keyup = 0x5B, 0x4B, 0x0002
+    for vk, flags in ((vk_lwin, 0), (vk_k, 0), (vk_k, keyup), (vk_lwin, keyup)):
+        user32.keybd_event(vk, 0, flags, 0)
+
+
 def fatal(msg) -> NoReturn:
-    if shutil.which("kdialog"):
+    if WINDOWS:  # pythonw has no console: a message box is the only way this is seen
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, msg, "TV Remote", 0x10)  # pyright: ignore[reportAttributeAccessIssue]
+    elif shutil.which("kdialog"):
         subprocess.run(["kdialog", "--title", "TV Remote", "--error", msg], check=False)
     sys.exit(msg)
 
@@ -635,6 +673,8 @@ def take_device(args):
 
 
 def cli(args):
+    if WINDOWS and sys.stdout:  # redirected output is cp1252 there: "★" and "·" mustn't crash a listing
+        sys.stdout.reconfigure(errors="replace")  # pyright: ignore[reportAttributeAccessIssue]
     wanted, args = take_device(args)
     if not args:
         sys.exit(__doc__)
@@ -789,8 +829,9 @@ def gui(cast_window=False):
     try:
         import remote_qt
     except ImportError as e:
-        fatal(f"TV Remote needs Qt for Python ({e.name}):\n"
-              "sudo apt install python3-pyside6.qtwidgets python3-pyside6.qtsvg")
+        fatal(f"TV Remote needs Qt for Python ({e.name}):\n" + (
+              "run install.ps1 again" if WINDOWS else
+              "sudo apt install python3-pyside6.qtwidgets python3-pyside6.qtsvg"))
     try:
         remote_qt.run(cast_window)
     except (ConfigError, remote_qt.InstanceError) as e:

@@ -4,7 +4,7 @@
 [![CodeQL](https://github.com/baverrr/samsung-tv-remote-v2/actions/workflows/codeql.yml/badge.svg)](https://github.com/baverrr/samsung-tv-remote-v2/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A desktop remote control for Linux, in two versions you switch between in the window:
+A desktop remote control for Linux and Windows, in two versions you switch between in the window:
 
 - **Samsung TV:** for Samsung Tizen smart TVs (2016 and later). It sends remote keys, opens apps, turns the
   TV on and off, casts photos, videos and music from this PC, and mirrors the screen.
@@ -15,7 +15,8 @@ A desktop remote control for Linux, in two versions you switch between in the wi
 Everything goes over the local network. There's a Qt window for everyday use and a command line for scripts.
 
 Built for and tested against a 2021 Samsung AU8000 (Tizen, firmware platform 21_KANTSU2E) and an
-Apple TV 4K (3rd generation, tvOS 27) on Ubuntu 26.04 with KDE Plasma on Wayland.
+Apple TV 4K (3rd generation, tvOS 27) on Ubuntu 26.04 with KDE Plasma on Wayland. Windows 10 and 11 are
+supported too; there the tests and the installer run on every push, on GitHub's Windows runners.
 
 <p align="center">
   <img src="docs/remote.png" alt="The remote window: power, status, source, mirror and cast buttons, a d-pad, volume and channel rockers, media keys, app shortcuts and a text box" width="300">
@@ -83,7 +84,8 @@ Apple TV 4K (3rd generation, tvOS 27) on Ubuntu 26.04 with KDE Plasma on Wayland
 - **TV Cast:** play photos, videos, music or whole folders on the TV over DLNA, with a queue, seek bar,
   next/previous, pause and an optional photo slideshow. HEIC, WebP, GIF, TIFF and AVIF photos are converted
   to JPEG on the fly. Drag and drop files onto the cast window.
-- **Screen mirroring:** opens GNOME Network Displays (Miracast). Share the whole screen or just one window,
+- **Screen mirroring:** opens GNOME Network Displays (Miracast); on Windows, Windows' own Cast panel
+  (Win+K), which sends the sound too. Share the whole screen or just one window,
   e.g. a browser: with the [patched build](#mirroring-one-window) you can resize the window or take a video
   full screen and the TV keeps playing, scaled to fit. A small background service sends the PC's sound to
   the TV while mirroring, but keeps chat and call apps (Discord, Zoom, Teams, …) on your headset.
@@ -130,9 +132,11 @@ bridge don't care which device they're driving.
 | Power on | Wake-on-LAN magic packet to the LAN broadcast address. |
 | Casting | The TV's DLNA renderer (UPnP AVTransport on port 9197). A small HTTP server on this PC (port **8199**) serves the file that's playing, only to the TV's address, under an unguessable link that stops working as soon as the queue moves on. |
 | ESP32 bridge | `tv-remote serve`: a small HTTP server on port **8198**. Each request needs a bearer token and goes through the same TV client as the window, so the pairing token, Wi-Fi fallback, app list and confirmed power-off are shared. |
-| Mirroring | GNOME Network Displays (Miracast over Wi-Fi Direct): the patched build in `~/.local/opt/gnd` if there is one, otherwise the system copy. `mirror_audio.py` watches PipeWire (`pactl subscribe`) and routes app audio while a session is streaming. |
+| Mirroring | GNOME Network Displays (Miracast over Wi-Fi Direct): the patched build in `~/.local/opt/gnd` if there is one, otherwise the system copy. `mirror_audio.py` watches PipeWire (`pactl subscribe`) and routes app audio while a session is streaming. On Windows, Mirror screen presses Win+K, Windows' built-in Miracast Cast panel. |
 
 ## Requirements
+
+**Linux**
 
 - Linux with Python 3.10 or newer and a desktop session. The tests run on Python 3.10–3.14 on every push;
   day-to-day use has only been on Python 3.14 with KDE Plasma (Wayland).
@@ -144,9 +148,22 @@ bridge don't care which device they're driving.
   - `gnome-network-displays`, for screen mirroring (and Docker, to build the patched copy that mirrors one
     window reliably).
   - `kdialog`, for start-up error pop-ups.
+
+**Windows**
+
+- Windows 10 or 11 with Python 3.10 or newer, from [python.org](https://www.python.org/downloads/windows/)
+  or `winget install Python.Python.3.13`. `install.ps1` installs everything else (PySide6 too) into a
+  virtual environment.
+- Optional: `ffmpeg` (`winget install ffmpeg`), to cast HEIC, WebP, GIF, TIFF and AVIF photos. Mirroring is
+  built into Windows.
+
+**Both**
+
 - The TV and this PC on the same LAN. Give the TV a fixed address (a DHCP reservation in the router).
 
 ## Install
+
+### Linux
 
 ```sh
 git clone https://github.com/baverrr/samsung-tv-remote-v2.git ~/.local/share/tv-remote
@@ -215,18 +232,50 @@ Cast sits on "Loading"):
 sudo ufw allow from <Apple TV address> to any port 8199 proto udp
 ```
 
+### Windows
+
+In PowerShell:
+
+```powershell
+git clone https://github.com/baverrr/samsung-tv-remote-v2.git "$env:LOCALAPPDATA\tv-remote"
+cd "$env:LOCALAPPDATA\tv-remote"
+powershell -ExecutionPolicy Bypass -File .\install.ps1     # add -Bridge for the ESP32 bridge
+```
+
+(No Git? Download the repository as a ZIP from GitHub and unpack it there.) `install.ps1` installs for the
+current user only. It:
+
+- creates `venv\` in the checkout and installs PySide6, `websocket-client` and `pyatv` into it, with the
+  AirPlay fix applied by `tools/patch_pyatv.py` (Windows has no `patch` command; it uses `patch-ng`, all or
+  nothing, once);
+- adds **TV Remote** to the Start menu (it opens without a console window), with an icon made from
+  `tv-remote.svg`;
+- registers the `tvremote://` link handler;
+- installs the `tv-remote` command (`%LOCALAPPDATA%\Programs\tv-remote\bin`, added to your PATH);
+- with `-Bridge`, registers the **TV Remote bridge** scheduled task, which starts the bridge when you sign in;
+- adds firewall rules that let the TV and network remotes reach this PC from the local network (TCP 8199,
+  UDP 8199 for the Apple TV's clock sync, and TCP 8198 with `-Bridge`) if you run it as administrator.
+  Otherwise it prints them to run once in an administrator PowerShell; or allow Python on **Private
+  networks** when Windows asks the first time you cast.
+
+Mirroring needs nothing more: **Mirror screen** opens Windows' Cast panel, where you pick the TV. Windows
+sends the sound with it, so there's no audio helper. Run `install.ps1` again after moving the checkout.
+
 ### Updating
 
 ```sh
 git -C ~/.local/share/tv-remote pull
 ```
 
+On Windows, `git pull` in the checkout, then run `install.ps1` again.
+
 Close and reopen the remote afterwards (launching it again only brings the open window forward). If
 `gnome-network-displays` was upgraded, also run `tools/build-gnd.sh` from the checkout again.
 
 ## Setup
 
-Settings live in `~/.config/tv-remote/config.json`, saved readable only by you. Set up either device, or
+Settings live in `~/.config/tv-remote/config.json`, saved readable only by you (on Windows,
+`%APPDATA%\tv-remote\config.json`, private to your Windows account). Set up either device, or
 both; `device` in the file is the one the remote opens with (the last one used).
 
 ### Apple TV
@@ -260,7 +309,7 @@ Create `config.json` with your TV's details; the remote adds the pairing token a
 
 - **`host`:** the TV's IP address.
 - **`mac`:** the TV's MAC address, used for Wake-on-LAN.
-- **`name`:** what the TV calls this remote.
+- **`name`:** what the TV calls this remote ("Linux Remote", or "Windows Remote" on Windows).
 
 Until `host` is set (or an Apple TV is paired), the remote says how to set one up instead of starting.
 
@@ -407,7 +456,8 @@ Replies are JSON: `{"ok": true, ...}`, or `{"error": "..."}` with `400` (bad key
 **Set it up:**
 
 1. Run `./install.sh --bridge`. This starts the `tv-remote-bridge` user service
-   (`journalctl --user -u tv-remote-bridge` for its log).
+   (`journalctl --user -u tv-remote-bridge` for its log). On Windows, `install.ps1 -Bridge` registers the
+   **TV Remote bridge** scheduled task instead, which starts it when you sign in.
 2. Get the token with `tv-remote serve --token`. It's generated into `config.json` (`bridge_token`) the
    first time. Every request needs the header `Authorization: Bearer <token>`.
 3. Optionally, limit which devices can connect. In `config.json`, `"bridge_clients": ["192.0.2.30"]`
@@ -459,11 +509,14 @@ which turns on TVs that ignore Wake-on-LAN.
 | `cast.py` | Casting: the file server, the DLNA renderer client and the play queue (any renderer) |
 | `bridge.py` | The ESP32 bridge: `tv-remote serve`'s HTTP server |
 | `mirror_audio.py` | PipeWire audio routing while mirroring (standard library only, runs as a user service) |
-| `test_gui.py`, `test_appletv.py`, `test_bridge.py`, `test_mirror_audio.py` | Tests (the TV, the Apple TV and PipeWire are faked; nothing touches the network) |
+| `test_gui.py`, `test_appletv.py`, `test_bridge.py`, `test_mirror_audio.py`, `test_windows.py` | Tests (the TV, the Apple TV, PipeWire and the Windows APIs are faked; nothing touches the network) |
 | `install.sh`, `packaging/` | Per-user install: launcher, menu entry, icon, audio and bridge service templates |
+| `install.ps1` | The Windows install: venv, Start menu shortcut, `tvremote://` links, `tv-remote` command, bridge task, firewall rules |
+| `tools/patch_pyatv.py`, `tools/make_icon.py` | Used by `install.ps1`: applies the pyatv patch without `patch`, renders the `.ico` |
+| `.gitattributes` | Keeps the patch and shell scripts at LF line endings on Windows checkouts |
 | `tools/screenshots.py` | Re-renders the screenshots in `docs/` offscreen |
 | `tools/build-gnd.sh`, `tools/gnd-window-resize.patch` | Builds GNOME Network Displays patched for one-window mirroring |
-| `tools/pyatv-airplay.patch` | pyatv's unreleased AirPlay fix for tvOS 26+ ([pyatv#2846](https://github.com/postlund/pyatv/pull/2846)), applied by `install.sh` |
+| `tools/pyatv-airplay.patch` | pyatv's unreleased AirPlay fix for tvOS 26+ ([pyatv#2846](https://github.com/postlund/pyatv/pull/2846)), applied by `install.sh` and `install.ps1` |
 | `docs/` | README screenshots (`*.png`, including `remote-appletv.png`), the mirroring diagram (`mirroring.svg`) and the ESP32 remote screen (`esp32-remote.svg`) |
 | `icons/` | Lucide icons used by the windows, and the Siri Remote's play/pause key (`play-pause.svg`, drawn for this project) |
 | `tv-remote.svg` | App icon |
@@ -476,6 +529,9 @@ QT_QPA_PLATFORM=offscreen ./venv/bin/python -I -m pytest -q
 ./venv/bin/ruff check .
 pyright                                        # uses pyrightconfig.json
 ```
+
+On Windows: `.\venv\Scripts\pip install pytest pytest-qt ruff`, then `$env:QT_QPA_PLATFORM = "offscreen";
+.\venv\Scripts\python -I -m pytest -q`.
 
 The tests run offscreen (no windows appear) against stubs, so they never talk to a real TV or change your
 audio, and they use a temporary config.
@@ -496,6 +552,8 @@ audio, and they use a temporary config.
   window is resized (see [Mirroring one window](#mirroring-one-window)). Whole-screen mirroring works with
   either.
 - **One TV of each kind:** settings hold one Samsung TV and one Apple TV.
+- **Windows: tested on GitHub's runners so far,** not yet against a TV from a Windows PC. Windows mirroring
+  is Windows' own Cast panel, so one-window mirroring and the audio routing of the Linux version don't apply.
 - **Apple TV: AirPlay Cast relies on a patched pyatv** until a pyatv release includes
   [pyatv#2846](https://github.com/postlund/pyatv/pull/2846). If the patch isn't applied (for example a venv
   set up by hand), the AirPlay cast button is greyed out and says why; run `install.sh` again.

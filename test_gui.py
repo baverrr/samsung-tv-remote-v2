@@ -5,12 +5,14 @@ The TV is stubbed, so nothing is sent over the network, and the config is a temp
 Run:  ~/.local/share/tv-remote/venv/bin/python -I -m pytest -q ~/.local/share/tv-remote/test_gui.py
 """
 
+import contextlib
 import http.client
 import io
 import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 from pathlib import Path
@@ -929,6 +931,11 @@ def test_cli_reports_a_refused_pairing_as_refused(monkeypatch):
         core.cli(["key", "mute"])
 
 
+POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="file modes and unix sockets are POSIX-only")
+WINDOWS_ONLY = pytest.mark.skipif(os.name != "nt", reason="named pipes are Windows-only")
+
+
+@POSIX_ONLY
 def test_config_with_the_token_is_never_readable_by_others(config, monkeypatch):
     tmp = config.with_suffix(".tmp")
     tmp.write_text("{}")  # a leftover from a crash, created with the umask (0644)
@@ -1255,6 +1262,11 @@ def test_a_token_that_cannot_be_saved_closes_the_socket(monkeypatch, no_reader):
 
 @pytest.fixture
 def instance_socket(monkeypatch):
+    """A fresh instance channel: the unix socket name, or on Windows the pipe name."""
+    if os.name == "nt":
+        name = rf"\\.\pipe\tv-remote-test-{os.getpid()}-{time.monotonic_ns()}"
+        monkeypatch.setattr(rq, "INSTANCE_PIPE", name)
+        return name
     name = f"\0tv-remote-test-{os.getpid()}-{time.monotonic_ns()}"
     monkeypatch.setattr(rq, "INSTANCE_SOCKET", name)
     return name
@@ -1271,13 +1283,23 @@ def test_second_launch_raises_the_running_remote(instance_socket):
     assert running is not None
     try:
         assert rq.claim_instance(b"cast") is None
-        conn, _ = running.accept()
-        with conn:
-            assert conn.recv(100).startswith(b"cast\n")
+        msg = running.next_message()
+        assert msg is not None and msg.startswith(b"cast\n")
     finally:
         running.close()
 
 
+def test_a_closed_instance_stops_waiting(instance_socket):
+    running = rq.claim_instance(b"raise")
+    assert running is not None
+    running.close()
+    assert running.next_message() is None
+    again = rq.claim_instance(b"raise")  # a relaunch starts a new remote instead of raising a closed one
+    assert again is not None
+    again.close()
+
+
+@POSIX_ONLY
 def test_launch_racing_another_one_gives_a_clear_error(instance_socket, monkeypatch):
     import socket
     monkeypatch.setattr(rq.time, "sleep", lambda s: None)
@@ -1287,6 +1309,7 @@ def test_launch_racing_another_one_gives_a_clear_error(instance_socket, monkeypa
             rq.claim_instance(b"raise")
 
 
+@POSIX_ONLY
 def test_a_remote_held_by_another_user_is_refused(instance_socket, monkeypatch):
     running = rq.claim_instance(b"raise")
     assert running is not None
@@ -1297,6 +1320,30 @@ def test_a_remote_held_by_another_user_is_refused(instance_socket, monkeypatch):
             rq.raise_existing(b"raise")
     finally:
         running.close()
+
+
+@WINDOWS_ONLY
+def test_a_pipe_held_without_our_key_is_refused(instance_socket, monkeypatch, tmp_path):
+    from multiprocessing.connection import Listener
+    squatter = Listener(instance_socket, family="AF_PIPE", authkey=b"someone else's key")
+    try:
+        threading.Thread(target=lambda: suppress_accept(squatter), daemon=True).start()
+        with pytest.raises(rq.InstanceError, match="Another user"):
+            rq.raise_existing(b"raise")
+    finally:
+        squatter.close()
+
+
+def suppress_accept(listener):
+    with contextlib.suppress(Exception):  # the caller's wrong key, or the listener closing
+        listener.accept()
+
+
+def test_the_instance_key_is_made_once_and_kept(config, monkeypatch):
+    monkeypatch.setattr(core, "config_dir", lambda: config.parent)
+    key = rq.instance_key()
+    assert len(key) == 32 and rq.instance_key() == key
+    assert (config.parent / "instance.key").read_bytes() == key
 
 
 def test_labels_never_render_html(qtbot):

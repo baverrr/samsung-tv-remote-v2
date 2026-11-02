@@ -36,7 +36,8 @@ or all features from working.
 
 The app uses other software that is covered by its own licenses and terms, including Qt for
 Python (PySide6), websocket-client, pyatv (MIT License; `tools/pyatv-airplay.patch` holds changes from
-pyatv pull request #2846 under that license), biplist, ffmpeg, GNOME Network Displays and the Lucide icons
+pyatv pull request #2846 under that license), biplist, patch-ng (MIT License; Windows installs only),
+ffmpeg, GNOME Network Displays and the Lucide icons
 (ISC License, see `icons/LICENSE-lucide`). Those terms apply to those components.
 
 ## 5. No warranty
