@@ -266,7 +266,10 @@ def test_now_playing_is_reported_with_artwork_once_per_item(client, box, events)
                                                                     episode_number=3, title="Who Is Alive?",
                                                                     state=DeviceState.Paused))
     deadline = time.time() + 3
-    while not any(e == "artwork" for e, _ in events) and time.time() < deadline:
+    # Both updates and the artwork: the two updates are queued from this thread, so the artwork
+    # (fetched after the first) can arrive before the second update.
+    while time.time() < deadline and not (any(e == "artwork" for e, _ in events)
+                                          and sum(e == "now_playing" for e, _ in events) >= 2):
         threading.Event().wait(0.01)  # time.sleep is stubbed out
     infos = [d for e, d in events if e == "now_playing"]
     assert infos[0]["subtitle"] == "Severance · S2 E3" and infos[0]["state"] == "playing"

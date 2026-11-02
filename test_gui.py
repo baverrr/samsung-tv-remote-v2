@@ -301,6 +301,7 @@ def test_f11_toggles_full_screen(qtbot, remote):
     qtbot.waitUntil(lambda: not remote.isFullScreen())
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows' offscreen platform doesn't resize a full-screen window")
 def test_cast_window_full_screen_keeps_its_size(qtbot, remote):
     from PySide6.QtWidgets import QFrame
     remote.open_cast()
@@ -1160,7 +1161,8 @@ def test_photo_conversion_errors_are_readable(media_server, tmp_path, monkeypatc
     def missing(*args, **kwargs):
         raise FileNotFoundError("ffmpeg")
     monkeypatch.setattr(cast.subprocess, "run", missing)
-    with pytest.raises(RuntimeError, match=r"^showing \.heic photos needs ffmpeg: sudo apt install ffmpeg$"):
+    how = "winget install ffmpeg" if os.name == "nt" else "sudo apt install ffmpeg"
+    with pytest.raises(RuntimeError, match=rf"^showing \.heic photos needs ffmpeg: {how}$"):
         media_server.publish(photo)
 
     def fails(*args, **kwargs):

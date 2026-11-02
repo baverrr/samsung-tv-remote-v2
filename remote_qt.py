@@ -239,8 +239,9 @@ def stylesheet():
     # Three steps of a modular scale (major third, 1.25), with captions held at 0.9× (9 pt ≈ 12 px at the
     # 10 pt design size, 96 DPI).
     subs = {**T, "fs_caption": f"{base * 0.9:.1f}pt", "fs_body": f"{base:.1f}pt", "fs_heading": f"{base * 1.25:.1f}pt",
-            "check": str(ICONS / "check-white.svg"), "chev_up": str(ICONS / "chevron-up-muted.svg"),
-            "chev_down": str(ICONS / "chevron-down-muted.svg")}
+            # Forward slashes: QSS reads a backslash in url() as an escape, so Windows paths would break.
+            "check": (ICONS / "check-white.svg").as_posix(), "chev_up": (ICONS / "chevron-up-muted.svg").as_posix(),
+            "chev_down": (ICONS / "chevron-down-muted.svg").as_posix()}
     css = QSS
     for name in sorted(subs, key=len, reverse=True):  # @accent_fill before @accent
         css = css.replace("@" + name, subs[name])

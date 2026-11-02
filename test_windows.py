@@ -161,3 +161,13 @@ def test_the_icon_has_every_windows_size(tmp_path):
     assert sides == list(make_icon.SIZES)
     first = int.from_bytes(data[6 + 12:6 + 16], "little")
     assert data[first:first + 8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_stylesheet_icon_paths_survive_windows_backslashes(monkeypatch):
+    pytest.importorskip("PySide6.QtWidgets")
+    from pathlib import PureWindowsPath
+
+    import remote_qt as rq
+    monkeypatch.setattr(rq, "ICONS", PureWindowsPath(r"C:\Users\someone\tv-remote\icons"))
+    urls = [u for u in rq.stylesheet().split("url(")[1:]]
+    assert urls and all(u.startswith("C:/Users/someone/tv-remote/icons/") for u in urls)  # QSS eats "\"
