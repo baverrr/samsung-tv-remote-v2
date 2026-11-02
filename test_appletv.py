@@ -151,7 +151,7 @@ def client(monkeypatch, box, events, connects):
 @pytest.mark.parametrize(("name", "method"), [
     ("KEY_ENTER", "select"), ("KEY_RETURN", "menu"), ("KEY_HOME", "home"), ("volup", "volume_up"),
     ("KEY_PLAY", "play_pause"), ("KEY_PAUSE", "play_pause"), ("KEY_FF", "skip_forward"), ("left", "left"),
-    ("play_pause", "play_pause"), ("select", "select"), ("KEY_MENU", "control_center")])
+    ("play_pause", "play_pause"), ("select", "select"), ("KEY_MENU", "control_center"), ("KEY_POWER", "power"), ("power", "power")])
 def test_keys_map_onto_the_siri_remote(name, method):
     assert appletv.resolve_key(name) == method
 
@@ -289,6 +289,7 @@ def test_seek_sets_the_position(client, box):
 def test_airplay_renderer_plays_the_cast_url_and_reports_states(client, box):
     r = client.renderer()
     assert r.state() == "STOPPED"
+    client.playing = {"state": "playing"}  # another app was playing before the cast
     r.load("http://192.0.2.1:8199/tok/a.mp4", "a", "video/mp4", "video", 1)
     r.play()
     deadline = time.time() + 3
@@ -310,6 +311,24 @@ def test_airplay_renderer_plays_the_cast_url_and_reports_states(client, box):
     while r.state() != "STOPPED" and time.time() < deadline:
         threading.Event().wait(0.01)
     assert r.state() == "STOPPED"
+
+
+def test_stopping_a_cast_ends_the_stream_even_if_the_box_doesnt_answer(client, box, monkeypatch):
+    r = client.renderer()
+    r.load("http://192.0.2.1:8199/tok/a.mp4", "a", "video/mp4", "video", 1)
+    r.play()
+    task = r.task
+    assert task is not None
+
+    def silent(method):
+        raise RuntimeError("no answer")
+    monkeypatch.setattr(r, "_remote", silent)
+    with pytest.raises(RuntimeError):
+        r.stop()
+    deadline = time.time() + 3
+    while not task.done() and time.time() < deadline:
+        threading.Event().wait(0.01)
+    assert task.cancelled() and r.state() == "STOPPED"
 
 
 def test_a_failed_airplay_stream_reports_an_error(client, box, monkeypatch):
@@ -470,6 +489,21 @@ def test_pairing_saves_both_credentials_and_switches_to_the_apple_tv(monkeypatch
     assert saved["appletv"]["identifier"] == "NEW-ID" and saved["appletv"]["name"] == "Living Room"
     assert saved["appletv"]["credentials"] == {"companion": "new-creds", "airplay": "new-creds"}
     assert (config.stat().st_mode & 0o777) == 0o600
+
+
+def test_pairing_another_box_drops_the_old_boxs_credentials(monkeypatch, config):
+    config.write_text(json.dumps({"host": HOST, "appletv": {
+        "identifier": "OLD-ID", "credentials": {"companion": "old", "airplay": "old"}}}))
+    fake_pyatv(monkeypatch, FakeHandler())
+    cfg = core.load_config()
+    p = appletv.Pairing("NEW-ID")
+    try:
+        p.begin("companion")
+        p.pin("1234")  # AirPlay skipped, as for a box that doesn't offer it
+        p.save(cfg)
+    finally:
+        p.close()
+    assert json.loads(config.read_text())["appletv"]["credentials"] == {"companion": "new-creds"}
 
 
 def test_a_wrong_pin_is_refused(monkeypatch):

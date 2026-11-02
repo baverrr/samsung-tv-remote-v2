@@ -47,7 +47,8 @@ Everything stays on your local network, between your computer and your TV:
 - **Apple TV (only if you pair one):** the app finds the box with multicast DNS (Bonjour) on your
   local network, and talks to it over the encrypted Companion and AirPlay protocols (keys, text, apps,
   power, what's playing and its artwork). Casting to it works as above: the box fetches the file from
-  port 8199 and plays it over AirPlay.
+  port 8199 and plays it over AirPlay, after syncing its clock with your computer over UDP on the
+  same port.
 - **Screen mirroring:** handled by GNOME Network Displays, which sends your screen and sound to
   the TV over Wi-Fi Direct (Miracast). While a session is streaming, the app's audio helper
   reads the names of programs playing sound (from PipeWire and `/proc`) to decide which ones to

@@ -81,7 +81,10 @@ def clean_app_lists(sec):
 
 
 def resolve_key(name):
-    """The pyatv method for a key name: KEY_VOLUP, volup or volume_up. ValueError if there's none."""
+    """The pyatv method for a key name: KEY_VOLUP, volup or volume_up ("power" for KEY_POWER, which
+    AppleTV.key turns into a confirmed sleep). ValueError if there's none."""
+    if name in ("KEY_POWER", "power") or name.upper() == "POWER":
+        return "power"
     for candidate in (name, "KEY_" + name.upper()):
         if candidate in KEYS:
             return KEYS[candidate]
@@ -278,7 +281,7 @@ class AppleTV:
             try:
                 atv = await pyatv.connect(conf, asyncio.get_running_loop())
             except Exception:  # noqa: BLE001 - e.g. "Failed to set up remote control channel" right after
-                await asyncio.sleep(1.5)  # another session closed: tvOS needs a moment; one more try
+                await asyncio.sleep(1.5)  # another connection (the old window, a CLI run) closed; one more try
                 atv = await pyatv.connect(conf, asyncio.get_running_loop())
             self._listener = self._listener or make_listener(self)
             atv.listener = self._listener
@@ -510,6 +513,7 @@ class AirPlayRenderer:
 
         async def start():
             await self.client._ensure()  # connection problems are raised here, to Caster
+            self.client.playing = None  # whatever played before isn't this stream: TRANSITIONING until it starts
             return asyncio.ensure_future(self.client.stream(url))
         self.task = self.client.loop.run(start())
 
@@ -520,8 +524,10 @@ class AirPlayRenderer:
         task, self.task = self.task, None
         if task is None or task.done():
             return
-        self._remote("stop")  # AirPlay's own stop while it holds the stream
-        self.client.loop.loop.call_soon_threadsafe(task.cancel)
+        try:
+            self._remote("stop")  # AirPlay's own stop while it holds the stream
+        finally:  # even if the box didn't answer: the stream mustn't outlive the cast
+            self.client.loop.loop.call_soon_threadsafe(task.cancel)
 
     def seek(self, seconds):
         self.client.seek(seconds)
@@ -654,8 +660,9 @@ class Pairing:
     def save(self, cfg):
         """Store the box and its credentials in the config and make the Apple TV the device in use."""
         sec = section(cfg)
-        if sec.get("identifier") != self.identifier:  # a different box: its apps aren't this one's
+        if sec.get("identifier") != self.identifier:  # a different box: its apps and keys aren't this one's
             sec["apps"] = []
+            sec["credentials"] = {}
             sec.pop("favorites", None)
             clean_app_lists(sec)
         sec["identifier"] = self.identifier

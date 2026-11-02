@@ -7,7 +7,8 @@ Wi-Fi fallback, app list and confirmed power-off as the desktop remote.
   POST /launch/<app>     an app key (netflix, or an Apple TV bundle ID) or the TV's name for an installed
                          app (URL-encoded)
   POST /power/on         Wake-on-LAN (an Apple TV: power on over Companion); answers at once (202)
-  POST /power/off        KEY_POWER until the TV reports standby, in the background (202)
+  POST /power/off        KEY_POWER until the TV reports standby (an Apple TV: sleep over Companion), in
+                         the background (202)
   GET  /status           {"power": "on" | "standby" | "off"}
 
 Every request needs "Authorization: Bearer <bridge_token>"; the token is generated into config.json on
@@ -128,8 +129,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise HTTPError(404, f"No installed app matches {name!r}")
                 tv.launch(app)
                 return 200, {"ok": True, "app": app["name"]}
-            case "POST", ["power", "on"]:
-                tv.wake()
+            case "POST", ["power", "on"]:  # in the background too: an Apple TV connects first, which
+                threading.Thread(target=self._wake, daemon=True).start()  # outlasts ESPHome's timeout
                 return 202, {"ok": True}
             case "POST", ["power", "off"]:
                 if self.bridge.turning_off.acquire(blocking=False):
@@ -139,10 +140,18 @@ class Handler(BaseHTTPRequestHandler):
                 return 200, {"power": tv.power_state()}
         raise HTTPError(404, f"No such request: {method} /{'/'.join(parts)}")
 
+    def _wake(self):
+        try:
+            self.bridge.tv.wake()
+        except (OSError, websocket.WebSocketException, RuntimeError) as e:
+            print(f"Power on failed: {core.describe_error(e)}", file=sys.stderr)
+
     def _turn_off(self):
         try:
-            if self.bridge.tv.power_state() == "on" and not self.bridge.tv.turn_off():
-                print(core.TURN_OFF_FAILED, file=sys.stderr)
+            tv = self.bridge.tv
+            if tv.power_state() == "on" and not tv.turn_off():
+                print("The Apple TV still reports it's on" if tv.kind == "appletv" else core.TURN_OFF_FAILED,
+                      file=sys.stderr)
         except (OSError, websocket.WebSocketException, RuntimeError) as e:
             print(f"Power off failed: {core.describe_error(e)}", file=sys.stderr)
         finally:

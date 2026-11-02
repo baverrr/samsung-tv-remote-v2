@@ -1687,6 +1687,9 @@ class AppleSetupDialog(QDialog):
             self.background(lambda: pairing.pin(pin), "pinned")
         elif self.stage == "pick" and self.list.selectedItems():
             box = self.boxes[self.list.currentRow()]
+            if self.pairing is not None and self.pairing.identifier != box["identifier"]:
+                old, self.pairing = self.pairing, None  # another box picked after a failed first step
+                threading.Thread(target=old.close, daemon=True).start()
             if self.pairing is None:
                 self.pairing = appletv.Pairing(box["identifier"], self.cfg.get("name") or core.DEFAULTS["name"],
                                                box["host"])

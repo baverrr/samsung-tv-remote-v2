@@ -390,8 +390,8 @@ them plain HTTP on the LAN instead and does the TV side itself:
 | `GET /status` | `{"power": "on"}`, `"standby"` or `"off"` |
 
 The bridge drives the device in use when it starts; run it with `--device appletv` (or `samsung`) to fix one.
-For an Apple TV, `/key/` also takes its own names (`select`, `menu`, `play_pause`, `control_center`), a key it
-doesn't have answers `400`, `/launch/` takes a bundle ID (`com.netflix.Netflix`) or an app name, and
+For an Apple TV, `/key/` also takes its own names (`select`, `menu`, `play_pause`, `control_center`), a key with
+no Apple TV equivalent (mute, source, info) answers `400`, `/launch/` takes a bundle ID (`com.netflix.Netflix`) or an app name, and
 `/power/on` wakes it over the network.
 
 Replies are JSON: `{"ok": true, ...}`, or `{"error": "..."}` with `400` (bad key name), `401` (token),

@@ -708,7 +708,8 @@ def run_command(tv, cfg, cmd, rest):
         elif state == "standby":
             print("Apple TV is already asleep" if apple else "TV is already in standby")
         else:
-            print(f"TV didn't answer at {tv.host} ({tv.unreachable}); it may already be off")
+            print(f"{'Apple TV' if apple else 'TV'} didn't answer at {tv.host} ({tv.unreachable}); "
+                  "it may already be off")
     elif cmd == "info":
         print(json.dumps(tv.info()["device"], indent=2))
     elif cmd == "playing":
