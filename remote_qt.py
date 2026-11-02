@@ -2282,7 +2282,8 @@ class PipeInstance:
         self.key = key
         self.closed = False
         self.messages = queue.Queue()
-        threading.Thread(target=self._accept, daemon=True).start()
+        self.thread = threading.Thread(target=self._accept, daemon=True)
+        self.thread.start()
 
     def _accept(self):
         while not self.closed:
@@ -2292,6 +2293,9 @@ class PipeInstance:
                 if not self.closed:
                     time.sleep(0.05)  # never a busy loop, whatever accept() keeps failing on
                 continue
+            if self.closed:  # close() woke us: let the pipe go
+                conn.close()
+                break
             threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
 
     def _serve(self, conn):
@@ -2319,7 +2323,14 @@ class PipeInstance:
         return None
 
     def close(self):
+        """Stop answering, and let the pipe name go, so a relaunch starts a new remote. The pipe instance
+        accept() waits on isn't closed by Listener.close(), so it's woken with a connection of our own first."""
+        from multiprocessing.connection import Client
+
         self.closed = True
+        with contextlib.suppress(OSError, EOFError):
+            Client(self.listener.address, family="AF_PIPE").close()
+        self.thread.join(2)
         self.listener.close()
 
 
