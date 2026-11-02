@@ -150,7 +150,7 @@ Click the keys, or use your keyboard. Press **?** in the window for this list.
 ```sh
 tv-remote key volup mute            # keys, short (volup) or full (KEY_VOLUP) names
 tv-remote apps                      # installed apps and their IDs (★ = on the remote)
-tv-remote launch netflix            # open an app (exact name first, then partial)
+tv-remote launch netflix            # open an app: its key or ID, else its name (exact, then partial)
 tv-remote text "stranger things"    # type into the TV's on-screen keyboard
 tv-remote on | off                  # power
 tv-remote info                      # the TV's details (JSON)
@@ -354,7 +354,7 @@ TV is set up (or `--device appletv` / `samsung`).
 
 | Request | Does |
 |---|---|
-| `POST /key/<key>` | A remote key: `volup` or `KEY_VOLUP` (an Apple TV also takes `select`, `menu`, `play_pause`, …) |
+| `POST /key/<key>` | A remote key: `volup` or `KEY_VOLUP` (an Apple TV also takes `select`, `menu`, `play_pause`, …; its `power` sleeps it as `/power/off` does) |
 | `POST /launch/<app>` | Opens an installed app: `netflix`, the TV's name for it, or an Apple TV bundle ID |
 | `POST /power/on` | Turns the TV on (answers at once, `202`) |
 | `POST /power/off` | Turns it off and checks it went off, in the background (`202`) |
@@ -366,7 +366,7 @@ Replies are JSON: `{"ok": true, ...}` or `{"error": "..."}`.
 
 1. Install with `./install.sh --bridge` (Linux) or `install.ps1 -Bridge` (Windows), so it starts by itself.
 2. Get the token with `tv-remote serve --token`. Every request needs `Authorization: Bearer <token>`.
-3. Optionally limit who can connect: `"bridge_clients": ["192.0.2.30"]` in the settings file.
+3. Optionally limit who can connect: `"bridge_clients": ["192.0.2.30"]` in the settings file (a list; one address on its own also works).
 4. Let the device through your firewall: `sudo ufw allow from <ESP32 address> to any port 8198 proto tcp`.
 
 The token travels unencrypted on plain HTTP: fine on a home network, but don't forward the port to the

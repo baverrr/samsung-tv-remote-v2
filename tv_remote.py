@@ -117,6 +117,11 @@ WAKE_FAILED = ("Sent the wake packet, but the TV didn't answer at {host}. If it'
                "Network › Expert Settings › Power On with Mobile; if it's on, check its address in the config.")
 
 
+def now():
+    """The clock the power waits run on: monotonic, so a clock change (NTP) can't stretch or cut them."""
+    return time.monotonic()
+
+
 def describe_error(e):
     """One line for a failure talking to the TV: urllib's reason rather than its wrapper, and never empty."""
     if isinstance(e, urllib.error.HTTPError):
@@ -579,8 +584,8 @@ class TV:
                     s.sendto(b"\xff" * 6 + mac * 16, (broadcast, 9))
 
     def wait_until_on(self, timeout=25):
-        end = time.time() + timeout
-        while time.time() < end:
+        end = now() + timeout
+        while now() < end:
             if self.power_state() == "on":
                 return True
             time.sleep(1)
@@ -589,8 +594,8 @@ class TV:
     def wait_until_off(self, timeout=10):
         """True once the TV reports standby or stops answering after KEY_POWER; False if it stays on
         (the key was lost, or opened a power menu instead)."""
-        end = time.time() + timeout
-        while time.time() < end:
+        end = now() + timeout
+        while now() < end:
             time.sleep(1)
             if self.power_state() != "on":
                 return True
@@ -619,6 +624,15 @@ def find_app(apps, name):
     name = name.lower()
     exact = [a for a in apps if a["name"].lower() == name]
     return (exact or [a for a in apps if name in a["name"].lower()] or [None])[0]
+
+
+def find_launchable(tv, name):
+    """An installed app by key (netflix, id:<appId>, an Apple TV bundle ID) or by the TV's name for it, or
+    None. The CLI's launch and the bridge's /launch both look apps up this way."""
+    cfg = tv.cfg
+    if tv.kind == "samsung" and (name in CATALOG_BY_KEY or name.startswith(CUSTOM)):
+        return installed_app(cfg, name)
+    return installed_app(cfg, name) or find_app(cfg["apps"] or tv.scan_apps(), name)
 
 
 MIRROR_HINT = ("Pick the TV in Windows' Cast panel, then Allow on the TV" if WINDOWS else
@@ -757,7 +771,7 @@ def run_command(tv, cfg, cmd, rest):
         for a in sorted(apps, key=lambda a: a["name"].lower()):
             print(f"{'★' if a['appId'] in favorites else ' '} {a['name']:<28} {a['appId']}")
     elif cmd == "launch":
-        app = find_app(cfg["apps"] or tv.scan_apps(), " ".join(rest))
+        app = find_launchable(tv, " ".join(rest))
         if not app:
             sys.exit(f"No installed app matches {' '.join(rest)!r} (see: tv-remote apps)")
         tv.launch(app)
@@ -806,6 +820,12 @@ def run_command(tv, cfg, cmd, rest):
             import appletv
             if not appletv.can_cast():
                 sys.exit(appletv.CAST_UNPATCHED)
+        # Find where the device is now first (the saved address may be old: a TV that moved to Wi-Fi, an
+        # Apple TV given a new address), as the cast server only serves to that address.
+        if tv.kind == "appletv":
+            tv.connect()
+        else:
+            tv.power_state()  # moves tv.host to wherever it answers (locate())
         done = threading.Event()
 
         def on_status(text):

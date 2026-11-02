@@ -2,6 +2,7 @@
 
 import http.client
 import json
+import socket
 import threading
 import time
 
@@ -177,3 +178,31 @@ def test_port_in_use_is_one_line(tv):
             bridge.serve(tv, [str(taken.server_address[1])])
     finally:
         taken.server_close()
+
+
+def raw(server, head):
+    with socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=5) as s:
+        s.sendall(head.encode())
+        return s.recv(4096).decode()
+
+
+@pytest.mark.parametrize(("length", "status"), [("abc", "400"), ("-1", "400"), ("999999999", "413")])
+def test_a_bad_body_length_is_refused_not_trusted(server, tv, length, status):
+    reply = raw(server, f"POST /key/volup HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\n"
+                        f"Content-Length: {length}\r\n\r\n")
+    assert reply.split()[1] == status and tv.calls == []
+
+
+def test_a_small_body_is_read_and_ignored(server, tv):
+    reply = raw(server, f"POST /key/volup HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\n"
+                        "Content-Length: 2\r\n\r\n{}")
+    assert reply.split()[1] == "200" and tv.calls == ["KEY_VOLUP"]
+
+
+def test_one_client_written_without_a_list_still_restricts(server, tv):
+    tv.cfg["bridge_clients"] = "127.0.0.10"  # holds "127.0.0.1", but isn't it
+    assert request(server, "POST", "/key/volup")[0] == 403
+    tv.cfg["bridge_clients"] = "127.0.0.1"
+    assert request(server, "POST", "/key/volup")[0] == 200
+    tv.cfg["bridge_clients"] = {"127.0.0.1": True}
+    assert request(server, "POST", "/key/volup")[0] == 403

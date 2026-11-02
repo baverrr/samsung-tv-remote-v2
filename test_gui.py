@@ -708,7 +708,7 @@ def test_wait_until_off(monkeypatch, states, expected):
     monkeypatch.setattr(core.TV, "power_state", lambda self: next(replies, "on"))
     monkeypatch.setattr(core.time, "sleep", lambda s: None)
     clock = iter(range(100))
-    monkeypatch.setattr(core.time, "time", lambda: next(clock))
+    monkeypatch.setattr(core, "now", lambda: next(clock))
     assert tv.wait_until_off() is expected
 
 
@@ -918,6 +918,7 @@ def test_cli_cast_reports_nothing_castable_in_one_line(monkeypatch, tmp_path):
     import cast
     closed = []
     monkeypatch.setattr(cast.Caster, "close", lambda self: closed.append(True) or self._stop.set())
+    monkeypatch.setattr(core.TV, "power_state", lambda self: "on")
     (tmp_path / "notes.txt").write_text("x")
     with pytest.raises(SystemExit, match=r"^Nothing castable there"):
         core.cli(["cast", str(tmp_path)])
@@ -1356,6 +1357,72 @@ def suppress_accept(listener):
         listener.accept()
 
 
+def test_a_damaged_instance_key_is_replaced(config, monkeypatch):
+    monkeypatch.setattr(core, "config_dir", lambda: config.parent)
+    (config.parent / "instance.key").write_bytes(b"short")
+    key = rq.instance_key()
+    assert len(key) == 32 and rq.instance_key() == key
+    assert not list(config.parent.glob("*.tmp"))
+
+
+def test_two_first_launches_end_up_with_one_key(config, monkeypatch):
+    monkeypatch.setattr(core, "config_dir", lambda: config.parent)
+    path = config.parent / "instance.key"
+    real = os.link
+
+    def other_launch_got_there_first(src, dst):
+        path.write_bytes(b"k" * 32)  # the other launch put its key in place a moment earlier
+        return real(src, dst)
+    monkeypatch.setattr(rq.os, "link", other_launch_got_there_first)
+    assert rq.instance_key() == b"k" * 32  # theirs, not a second key the other launch would refuse
+    assert not list(config.parent.glob("*.tmp"))
+
+
+@WINDOWS_ONLY
+def test_a_caller_that_stalls_doesnt_hold_up_the_next_launch(instance_socket):
+    from multiprocessing.connection import Client
+    running = rq.claim_instance(b"raise")
+    assert running is not None
+    try:
+        stalled = Client(instance_socket, family="AF_PIPE")  # connects, never answers the key check
+        try:
+            assert rq.claim_instance(b"cast") is None
+            got = running.next_message()
+            assert got is not None and got.startswith(b"cast\n")
+        finally:
+            stalled.close()
+    finally:
+        running.close()
+
+
+def test_cli_cast_finds_the_tv_before_serving_to_it(config, monkeypatch, tmp_path):
+    import cast
+    hosts = []
+
+    def power_state(self):
+        self.host = "192.0.2.77"  # locate() found it at its Wi-Fi address
+        return "on"
+
+    def caster(host, on_status, renderer=None):
+        hosts.append(host)
+        raise RuntimeError("stop here")
+    monkeypatch.setattr(core.TV, "power_state", power_state)
+    monkeypatch.setattr(cast, "Caster", caster)
+    with pytest.raises(SystemExit, match="stop here"):
+        core.cli(["cast", str(tmp_path)])
+    assert hosts == ["192.0.2.77"]
+
+
+def test_cli_launch_takes_an_app_key_like_the_bridge(config, monkeypatch):
+    launched = []
+    monkeypatch.setattr(core.TV, "launch", lambda self, app: launched.append(app["appId"]))
+    monkeypatch.setattr(core.time, "sleep", lambda s: None)
+    app_id = APPS[0]["appId"]
+    core.cli(["launch", f"id:{app_id}"])
+    core.cli(["launch", core.key_for_id(app_id)])
+    assert launched == [app_id, app_id]
+
+
 def test_the_instance_key_is_made_once_and_kept(config, monkeypatch):
     monkeypatch.setattr(core, "config_dir", lambda: config.parent)
     key = rq.instance_key()
@@ -1573,6 +1640,16 @@ def test_wait_until_on(monkeypatch):
     monkeypatch.setattr(core.TV, "power_state", lambda self: next(states))
     monkeypatch.setattr(core.time, "sleep", lambda s: None)
     assert tv.wait_until_on() is True
+
+
+def test_power_waits_run_on_the_monotonic_clock(monkeypatch):
+    tv = core.TV(core.load_config())
+    monkeypatch.setattr(core.TV, "power_state", lambda self: "off")
+    monkeypatch.setattr(core.time, "sleep", lambda s: None)
+    monkeypatch.setattr(core.time, "time", lambda: pytest.fail("the wall clock can jump"))
+    clock = iter(range(100))
+    monkeypatch.setattr(core, "now", lambda: next(clock))
+    assert tv.wait_until_on(timeout=5) is False
 
 
 def test_cast_request_escapes_titles_and_urls(monkeypatch):

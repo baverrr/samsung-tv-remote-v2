@@ -779,7 +779,8 @@ SHORTCUT_HELP_APPLE = [
     ("Tab", "Move between on-screen keys (Space or Enter presses, Esc leaves)"),
     ("F11", "Full screen"), ("?", "This list"),
 ]
-# The Apple TV's versions of STATUS_EVENTS ("pairing" never happens: it pairs once, in setup).
+# The Apple TV's versions of STATUS_EVENTS ("pairing" is the Samsung TV's Allow prompt, when it takes the
+# volume keys: the Apple TV itself pairs once, in setup).
 STATUS_EVENTS_APPLE = {
     **STATUS_EVENTS,
     "off_done": ("Apple TV is asleep · press power to wake it", "off"),
@@ -2226,35 +2227,32 @@ def instance_key():
             return key
     except OSError:
         pass
+    # Written whole to a file of our own, then put in place in one step. Linking never overwrites, so of two
+    # first launches at once one key wins, and both read that one; a short (damaged) key is replaced.
     path.parent.mkdir(parents=True, exist_ok=True)
-    key = secrets.token_bytes(32)
-    path.write_bytes(key)
-    return key
+    tmp = path.with_name(f"instance.key.{os.getpid()}.tmp")
+    tmp.write_bytes(secrets.token_bytes(32))
+    try:
+        if path.exists():
+            os.replace(tmp, path)
+        else:
+            os.link(tmp, path)
+    except FileExistsError:
+        pass
+    finally:
+        tmp.unlink(missing_ok=True)
+    return path.read_bytes()
 
 
-class Instance:
-    """The running remote's end of the single-instance channel: next_message() waits for a launch's
-    b"raise\n<token>" or b"cast\n<token>" (None once closed)."""
+class SocketInstance:
+    """The running remote's end of the single-instance channel on Linux, an abstract unix socket:
+    next_message() waits for a launch's b"raise\n<token>" or b"cast\n<token>" (None once closed)."""
 
     def __init__(self, listener):
         self.listener = listener
-        self.closed = False
 
     def next_message(self):
-        while not self.closed:
-            if core.WINDOWS:
-                from multiprocessing import AuthenticationError
-                try:
-                    conn = self.listener.accept()
-                except (OSError, EOFError, AuthenticationError):  # closed, or a caller without the key
-                    if not self.closed:
-                        time.sleep(0.05)  # never a busy loop, whatever accept() keeps failing on
-                    continue
-                with conn:
-                    try:
-                        return conn.recv_bytes(4096)
-                    except (OSError, EOFError):
-                        return b"raise"
+        while True:
             try:
                 conn, _ = self.listener.accept()
             except OSError:  # listener shut down: the window has closed
@@ -2267,13 +2265,61 @@ class Instance:
                     return conn.recv(4096)
                 except OSError:
                     return b"raise"
+
+    def close(self):
+        with contextlib.suppress(OSError):
+            self.listener.shutdown(socket.SHUT_RDWR)
+        self.listener.close()
+
+
+class PipeInstance:
+    """The same on Windows, a named pipe whose callers prove they hold instance_key(). Each caller is
+    answered on its own thread, with the key check and the message under a time limit there, so one that
+    connects and stalls can't hold up the next launch (multiprocessing's Listener would check keys inline)."""
+
+    def __init__(self, listener, key):
+        self.listener = listener  # a multiprocessing Listener made without an authkey: the check is ours
+        self.key = key
+        self.closed = False
+        self.messages = queue.Queue()
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def _accept(self):
+        while not self.closed:
+            try:
+                conn = self.listener.accept()
+            except (OSError, EOFError):
+                if not self.closed:
+                    time.sleep(0.05)  # never a busy loop, whatever accept() keeps failing on
+                continue
+            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+
+    def _serve(self, conn):
+        from multiprocessing import AuthenticationError
+        from multiprocessing.connection import answer_challenge, deliver_challenge
+
+        with conn:
+            try:
+                deliver_challenge(conn, self.key)  # as Listener(authkey=...) would: our challenge, then theirs
+                answer_challenge(conn, self.key)
+            except (OSError, EOFError, AuthenticationError):
+                return  # a caller without the key, or one that went away
+            try:
+                msg = conn.recv_bytes(4096) if conn.poll(1) else b"raise"
+            except (OSError, EOFError):
+                msg = b"raise"
+        self.messages.put(msg)
+
+    def next_message(self):
+        while not self.closed:
+            try:
+                return self.messages.get(timeout=0.2)
+            except queue.Empty:
+                continue
         return None
 
     def close(self):
         self.closed = True
-        if not core.WINDOWS:
-            with contextlib.suppress(OSError):
-                self.listener.shutdown(socket.SHUT_RDWR)
         self.listener.close()
 
 
@@ -2327,8 +2373,8 @@ class InstanceError(RuntimeError):
 
 
 def claim_instance(msg):
-    """The single-instance listener (an Instance) for this new remote, or None if one is already running
-    (it was sent msg). Two launches at the same moment can both find no remote; the one that loses the
+    """The single-instance listener (a SocketInstance or PipeInstance) for this new remote, or None if one
+    is already running (it was sent msg). Two launches at the same moment can both find no remote; the one that loses the
     bind asks the winner instead, once it's listening. On Windows the pipe's first instance is exclusive
     (FILE_FLAG_FIRST_PIPE_INSTANCE), which plays the part of the bind."""
     for attempt in range(3):
@@ -2339,7 +2385,7 @@ def claim_instance(msg):
         if core.WINDOWS:
             from multiprocessing.connection import Listener
             try:
-                return Instance(Listener(INSTANCE_PIPE, family="AF_PIPE", authkey=instance_key()))
+                return PipeInstance(Listener(INSTANCE_PIPE, family="AF_PIPE"), instance_key())
             except OSError:
                 continue
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -2349,7 +2395,7 @@ def claim_instance(msg):
             listener.close()
             continue
         listener.listen()
-        return Instance(listener)
+        return SocketInstance(listener)
     raise InstanceError(f"Another {core.APP_NAME} seems to be starting but doesn't answer; try again in a moment.")
 
 
