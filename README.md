@@ -4,13 +4,26 @@
 [![CodeQL](https://github.com/baverrr/samsung-tv-remote-v2/actions/workflows/codeql.yml/badge.svg)](https://github.com/baverrr/samsung-tv-remote-v2/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A desktop remote control for Linux and Windows, in two versions you switch between in the window:
+A desktop remote control for Linux and Windows, in two versions: one for Samsung TVs and one for Apple TV.
 
 - **Samsung TV:** for Samsung Tizen smart TVs (2016 and later). It sends remote keys, opens apps, turns the
   TV on and off, casts photos, videos and music from this PC, and mirrors the screen.
 - **Apple TV:** for Apple TV boxes (tvOS), with its own window drawn as a silver Siri Remote. It sends remote
-  keys, opens any app on the box, types from this PC's keyboard into the TV as you type, sleeps and wakes it, shows **what's playing** (title, show, artwork
-  and a seek bar), and casts videos and music from this PC over **AirPlay**.
+  keys, opens any app on the box, types from this PC's keyboard into the TV as you type, sleeps and wakes
+  it, shows **what's playing** (title, show, artwork and a seek bar), and casts videos and music from this
+  PC over **AirPlay**.
+
+> [!TIP]
+> **You only need one of them.** The Apple TV remote works without any Samsung TV, and the Samsung
+> remote without an Apple TV. Set up just the device you have:
+>
+> - **Only an Apple TV?** The first start offers **Set up Apple TV…**; pair it, and the remote opens
+>   straight to the Siri Remote from then on. Nothing ever tries to reach a Samsung TV, and the command
+>   line and the ESP32 bridge use the Apple TV without being told.
+> - **Only a Samsung TV?** Put its address in the settings file and the remote is the Samsung one, as it
+>   always was.
+> - **Both?** Switch between them from the device menu at the bottom of the window; the remote reopens on
+>   the one you used last.
 
 Everything goes over the local network. There's a Qt window for everyday use and a command line for scripts.
 
@@ -275,8 +288,12 @@ Close and reopen the remote afterwards (launching it again only brings the open 
 ## Setup
 
 Settings live in `~/.config/tv-remote/config.json`, saved readable only by you (on Windows,
-`%APPDATA%\tv-remote\config.json`, private to your Windows account). Set up either device, or
-both; `device` in the file is the one the remote opens with (the last one used).
+`%APPDATA%\tv-remote\config.json`, private to your Windows account).
+
+**Set up only the devices you have.** Each section below stands on its own: with just an Apple TV, follow
+[Apple TV](#apple-tv) and skip the Samsung part entirely (the device menu then lists Samsung TV as "not set
+up"). With both, `device` in the file is the one the remote opens with (the last one used), and
+`--device samsung` or `--device appletv` picks one on the command line.
 
 ### Apple TV
 
