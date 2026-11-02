@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 from pyatv import exceptions as pyatv_errors
-from pyatv.const import DeviceState, KeyboardFocusState, PowerState
+from pyatv.const import DeviceState, FeatureState, KeyboardFocusState, PowerState
 
 import appletv
 import bridge
@@ -64,6 +64,8 @@ class FakeBox:
         self.stream = SimpleNamespace(play_url=self.play_url)
         self.metadata = SimpleNamespace(artwork=self.artwork, app=SimpleNamespace(name="TV"), playing=self.playing)
         self.device_info = SimpleNamespace(model_str="Apple TV 4K (gen 3)", version="27.2")
+        self.volume_state = FeatureState.Available  # Unavailable: the box isn't controlling the TV's volume
+        self.features = SimpleNamespace(get_feature=lambda name: SimpleNamespace(state=self.volume_state))
         self.now = None
         self.played = None
         self.artwork_calls = 0
@@ -954,3 +956,43 @@ def test_a_text_field_opening_or_closing_is_reported(live, wired, box, events):
     assert events[-1] == ("keyboard", False)
     live._listener.focusstate_update(KeyboardFocusState.Unfocused, KeyboardFocusState.Focused)
     assert events[-1] == ("keyboard", True)
+
+
+# -- volume
+
+
+def test_volume_goes_through_the_apple_tv_when_it_controls_the_tv(client, box):
+    client.key("KEY_VOLUP")
+    client.key("volume_down")
+    assert box.log == ["volume_up", "volume_down"]
+
+
+def test_volume_says_why_when_the_apple_tv_cannot_change_it(client, box):
+    box.volume_state = FeatureState.Unavailable  # Volume Control set to IR, or HDMI-CEC off
+    with pytest.raises(RuntimeError, match="Volume Control to Auto"):
+        client.key("KEY_VOLUP")
+    assert box.log == []
+
+
+def test_volume_can_go_to_the_samsung_tv(client, box, monkeypatch):
+    sent = []
+    monkeypatch.setattr(core.TV, "key", lambda self, k: sent.append(k))
+    client.cfg["volume_via_samsung"] = True
+    client.key("KEY_VOLUP")
+    client.key("volume_down")
+    client.key("KEY_ENTER")  # only volume goes there
+    assert sent == ["KEY_VOLUP", "KEY_VOLDOWN"] and box.log == ["select"]
+
+
+def test_volume_stays_on_the_apple_tv_without_a_samsung_tv(client, box, monkeypatch):
+    monkeypatch.setattr(core, "is_set_up", lambda cfg, device: device == "appletv")
+    client.cfg["volume_via_samsung"] = True
+    client.key("KEY_VOLUP")
+    assert box.log == ["volume_up"]
+
+
+def test_the_volume_setting_survives_a_broken_value(config):
+    cfg = json.loads(config.read_text())
+    cfg["appletv"]["volume_via_samsung"] = "yes"
+    config.write_text(json.dumps(cfg))
+    assert appletv.section(core.load_config())["volume_via_samsung"] is False

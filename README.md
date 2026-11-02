@@ -91,6 +91,8 @@ TV must be able to reach your PC: see [Firewall](#firewall) if you use one.
   keys back to the remote.
 - **Apps:** the Apple TV lists all its apps; pick five for buttons, and the rest are under **All apps**.
 - **Power:** sleep and wake over the network.
+- **Volume:** through the Apple TV when it controls your TV's volume (HDMI-CEC), or straight to your Samsung
+  TV with **Volume keys control the Samsung TV** in the device menu. [Volume doesn't change?](#apple-tv)
 - **AirPlay cast:** play videos and music from your PC on the Apple TV.
 
 **Samsung TV**
@@ -186,6 +188,12 @@ keys and apps, the second now playing and AirPlay casting.
   the Apple TV isn't found, type its address in the setup window (Settings › Network on the Apple TV).
 - To pair again, for example after removing the remote under the Apple TV's **Settings › Remotes and
   Devices**, choose **Pair Apple TV again…**.
+- **Volume doesn't change?** The Apple TV can only change the TV's volume when it controls it over HDMI-CEC;
+  if your Siri Remote works the TV by infrared, no app can. Either set the Apple TV's **Settings › Remotes
+  and Devices › Volume Control** to **Auto** (and HDMI-CEC, Anynet+ on Samsung, on the TV), or, if the Apple
+  TV is plugged into a Samsung TV that's set up here, choose **Volume keys control the Samsung TV** in the
+  device menu. The remote says which when the Apple TV can't. The setting is `volume_via_samsung` under
+  `appletv` in the settings file.
 
 ### Samsung TV
 

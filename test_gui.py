@@ -2106,6 +2106,16 @@ def test_now_playing_seek(qtbot, apple, monkeypatch):
     qtbot.waitUntil(lambda: seeks == [1200])
 
 
+def test_device_menu_can_send_apple_tv_volume_to_the_samsung_tv(qtbot, apple, config):
+    apple.fill_device_menu(apple.device_menu)
+    act = next(a for a in apple.device_menu.actions() if a.text() == "Volume keys control the Samsung TV")
+    assert act.isCheckable() and not act.isChecked()
+    act.trigger()
+    assert json.loads(config.read_text())["appletv"]["volume_via_samsung"] is True
+    apple.fill_device_menu(apple.device_menu)
+    assert next(a for a in apple.device_menu.actions() if a.text() == "Volume keys control the Samsung TV").isChecked()
+
+
 def test_device_menu_switches_and_offers_setup(qtbot, apple):
     apple.fill_device_menu(apple.device_menu)
     actions = {a.text(): a for a in apple.device_menu.actions() if a.text()}

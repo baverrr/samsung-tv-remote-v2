@@ -1058,10 +1058,26 @@ class RemoteWindow(QWidget):
             act.setChecked(device == self.device)
             act.setEnabled(device in ready)
         menu.addSeparator()
+        if self.apple and "samsung" in ready:  # the Apple TV is often plugged into the Samsung TV
+            act = menu.addAction("Volume keys control the Samsung TV", self.toggle_volume_via_samsung)
+            act.setCheckable(True)
+            act.setChecked(bool(self.cfg["volume_via_samsung"]))
+            act.setToolTip("For an Apple TV that can't change the TV's volume itself (its Volume Control set to "
+                           "IR, or HDMI-CEC off): volume goes to the Samsung TV instead")
         menu.addAction("Pair Apple TV again…" if "appletv" in ready else "Set up Apple TV…", self.set_up_apple_tv)
         if "samsung" not in ready:
             menu.addAction("Set up Samsung TV…", lambda: QMessageBox.information(
                 self, "Set up Samsung TV", core.SAMSUNG_NOT_SET_UP))
+
+    def toggle_volume_via_samsung(self):
+        self.cfg["volume_via_samsung"] = not self.cfg["volume_via_samsung"]
+        try:
+            core.save_config(self.root)
+        except OSError as e:
+            self.set_status(f"Couldn't save the setting: {core.describe_error(e)}", "danger")
+            return
+        self.set_status("Volume keys control the Samsung TV" if self.cfg["volume_via_samsung"] else
+                        "Volume keys go to the Apple TV")
 
     def set_up_apple_tv(self):
         dialog = AppleSetupDialog(self, self.root)
