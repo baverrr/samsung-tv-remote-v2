@@ -93,11 +93,15 @@ def resolve_key(name):
     raise ValueError(f"The Apple TV has no {name!r} key")
 
 
+class NeedsPyatv(RuntimeError):
+    """pyatv isn't installed: a setup problem, so never reported as the box being off."""
+
+
 def _pyatv():
     try:
         import pyatv
     except ImportError as e:
-        raise RuntimeError("The Apple TV remote needs pyatv. Run install.sh again, or: "
+        raise NeedsPyatv("The Apple TV remote needs pyatv. Run install.sh again, or: "
                            "venv/bin/pip install pyatv") from e
     return pyatv
 
@@ -244,6 +248,7 @@ class AppleTV:
         self.apps_from_cache = False
         self.atv = None
         self.playing = None  # the last now-playing info, for AirPlayRenderer
+        self.push_error = None  # why now playing couldn't start on this connection, if it couldn't
         self.closing = False
         self._listener = None  # make_listener(), once pyatv is imported
         self._artwork_hash = None
@@ -286,9 +291,14 @@ class AppleTV:
             self._listener = self._listener or make_listener(self)
             atv.listener = self._listener
             atv.power.listener = self._listener
-            with contextlib.suppress(Exception):  # no MRP (AirPlay not paired): the remote still works
+            self.push_error = None
+            try:
                 atv.push_updater.listener = self._listener
                 atv.push_updater.start()
+            except Exception as e:  # noqa: BLE001 - no MRP: keys, apps and power still work
+                self.push_error = str(translate(e))
+                if creds.get("airplay"):  # paired for it, so it should have worked: say why it didn't
+                    self.on_event("error", f"Now playing isn't available ({self.push_error})")
             self.atv = atv
             self._remember(str(conf.address), conf.name)
             self.on_event("connected", None)
@@ -350,8 +360,10 @@ class AppleTV:
         if key in ("KEY_POWER", "power"):
             self.turn_off()
             return
-        method = resolve_key(key)
+        self.remote(resolve_key(key))
 
+    def remote(self, method):
+        """A pyatv RemoteControl call: select, play, pause, stop..."""
         async def go(atv):
             await getattr(atv.remote_control, method)()
         self.loop.run(self._do(go))
@@ -383,6 +395,8 @@ class AppleTV:
         try:
             found = [{"appId": a.identifier, "name": a.name or a.identifier}
                      for a in self.loop.run(self._do(go))]
+        except (core.PairingRefused, NeedsPyatv):
+            raise  # the saved list would hide that the box refused this remote
         except (OSError, RuntimeError):
             self.apps_from_cache = True
             return self.cfg["apps"]
@@ -411,6 +425,8 @@ class AppleTV:
             return atv.power.power_state.name.lower()
         try:
             state = self.loop.run(self._do(go))
+        except (core.PairingRefused, NeedsPyatv):
+            raise  # it answered and refused (or can't be asked): not "off"
         except (OSError, RuntimeError) as e:
             self.unreachable = core.describe_error(e)
             return "off"
@@ -438,16 +454,24 @@ class AppleTV:
         return False
 
     def turn_off(self):
-        """Puts the box to sleep. True once it reports it's off."""
+        """Puts the box to sleep. True once it reports standby: an asleep box still answers (that's how
+        it's woken), so one that stops answering isn't taken as asleep."""
         async def go(atv):
             await atv.power.turn_off()
         self.loop.run(self._do(go))
-        end = time.time() + 10
+        end = time.time() + 15
         while time.time() < end:
             time.sleep(1)
-            if self.power_state() != "on":
+            if self.power_state() == "standby":
                 return True
         return False
+
+    @property
+    def turn_off_failed(self):
+        """What to say when turn_off() returned False."""
+        if self.unreachable:
+            return f"Sent sleep, but then the Apple TV stopped answering ({self.unreachable})"
+        return "Sent sleep, but the Apple TV still reports it's on"
 
     # -- now playing
 
@@ -484,6 +508,19 @@ class AppleTV:
             await atv.remote_control.set_position(max(0, int(seconds)))
         self.loop.run(self._do(go))
 
+    def start_stream(self, url):
+        """Starts playing a URL over AirPlay; returns its task, done when playback ends. Connection
+        problems are raised here, the stream's own failure is the task's exception."""
+        async def start():
+            await self._ensure()
+            self.playing = None  # whatever played before isn't this stream: TRANSITIONING until it starts
+            return asyncio.ensure_future(self.stream(url))
+        return self.loop.run(start())
+
+    def cancel(self, task):
+        """Cancels a start_stream() task from any thread."""
+        self.loop.loop.call_soon_threadsafe(task.cancel)
+
     def renderer(self):
         return AirPlayRenderer(self)
 
@@ -510,12 +547,7 @@ class AirPlayRenderer:
         if not can_cast():
             raise RuntimeError(CAST_UNPATCHED)
         url, self.url = self.url, None
-
-        async def start():
-            await self.client._ensure()  # connection problems are raised here, to Caster
-            self.client.playing = None  # whatever played before isn't this stream: TRANSITIONING until it starts
-            return asyncio.ensure_future(self.client.stream(url))
-        self.task = self.client.loop.run(start())
+        self.task = self.client.start_stream(url)
 
     def pause(self):
         self._remote("pause")
@@ -527,15 +559,13 @@ class AirPlayRenderer:
         try:
             self._remote("stop")  # AirPlay's own stop while it holds the stream
         finally:  # even if the box didn't answer: the stream mustn't outlive the cast
-            self.client.loop.loop.call_soon_threadsafe(task.cancel)
+            self.client.cancel(task)
 
     def seek(self, seconds):
         self.client.seek(seconds)
 
     def _remote(self, method):
-        async def go(atv):
-            await getattr(atv.remote_control, method)()
-        self.client.loop.run(self.client._do(go))
+        self.client.remote(method)
 
     @property
     def error(self):
@@ -556,10 +586,14 @@ class AirPlayRenderer:
             return "STOPPED"
         if task.done():
             return "ERROR" if not task.cancelled() and task.exception() else "STOPPED"
+        if self.client.push_error:  # no now playing: AirPlay holding the stream is all there is to go on
+            return "PLAYING"
         state = (self.client.playing or {}).get("state") or ""
         return {"playing": "PLAYING", "paused": "PAUSED_PLAYBACK"}.get(state, "TRANSITIONING")
 
     def position(self):
+        if self.client.push_error:
+            return 0, 0
         info = self.client.now_playing()
         return info["position"] or 0, info["total"] or 0
 

@@ -665,3 +665,266 @@ def test_the_timing_server_listens_on_the_cast_port(monkeypatch):
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as taken:
         taken.bind(("127.0.0.1", free))
         assert asyncio.run(port_of()) not in (free, 0)
+
+
+# -- the real connection path (pyatv's scan and connect faked, the client's own code run)
+
+
+@pytest.fixture
+def wired(monkeypatch, box):
+    """pyatv.scan finds the box (at a new address) and pyatv.connect hands back the fake box. Returns a
+    namespace logging the scans, the connects and the credentials set."""
+    import pyatv
+
+    net = SimpleNamespace(scans=[], connects=0, creds={}, fail_connect=[], unicast=True, push_fails=None)
+    conf = SimpleNamespace(address="192.0.2.61", name="Den",
+                           set_credentials=lambda proto, c: net.creds.__setitem__(proto.name.lower(), c))
+    box.push_updater = SimpleNamespace(listener=None, start=lambda: push_start())
+
+    def push_start():
+        if net.push_fails:
+            raise net.push_fails
+        box.log.append("push")
+
+    async def scan(loop, **kw):
+        net.scans.append("unicast" if kw.get("hosts") else "multicast")
+        return [conf] if net.unicast or not kw.get("hosts") else []
+
+    async def connect(c, loop):
+        net.connects += 1
+        if net.fail_connect:
+            raise net.fail_connect.pop(0)
+        return box
+
+    async def no_wait(seconds):
+        pass
+    monkeypatch.setattr(pyatv, "scan", scan)
+    monkeypatch.setattr(pyatv, "connect", connect)
+    monkeypatch.setattr(appletv.asyncio, "sleep", no_wait)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    monkeypatch.setattr(appletv, "can_cast", lambda: True)
+    monkeypatch.setattr(appletv, "pin_timing_port", lambda: None)
+    return net
+
+
+@pytest.fixture
+def live(wired, events):
+    c = appletv.AppleTV(core.load_config(), lambda e, d: events.append((e, d)))
+    yield c
+    c.close()
+
+
+def test_connecting_sets_both_credentials_listens_and_remembers_the_address(live, wired, box, events, config):
+    assert live.connect() is box
+    assert wired.scans == ["unicast"]  # the saved address is asked first
+    assert wired.creds == {"companion": "test-companion", "airplay": "test-airplay"}
+    assert box.listener is live._listener and box.power.listener is live._listener
+    assert box.push_updater.listener is live._listener and "push" in box.log
+    assert events == [("connected", None)] and live.push_error is None
+    assert live.host == "192.0.2.61" and json.loads(config.read_text())["appletv"]["host"] == "192.0.2.61"
+    live.connect()
+    assert wired.connects == 1  # already connected
+
+
+def test_a_box_not_at_its_saved_address_is_searched_for(live, wired):
+    wired.unicast = False
+    live.connect()
+    assert wired.scans == ["unicast", "multicast"]
+
+
+def test_a_box_nowhere_on_the_network_is_unreachable(live, wired, monkeypatch):
+    import pyatv
+
+    async def nothing(loop, **kw):
+        return []
+    monkeypatch.setattr(pyatv, "scan", nothing)
+    with pytest.raises(ConnectionError, match="isn't answering"):
+        live.connect()
+    assert live.power_state() == "off" and "isn't answering" in live.unreachable
+
+
+def test_a_failed_connect_is_tried_once_more(live, wired, box):
+    wired.fail_connect = [pyatv_errors.ConnectionFailedError("Failed to set up remote control channel")]
+    assert live.connect() is box and wired.connects == 2
+
+
+def test_a_second_failed_connect_is_reported(live, wired):
+    wired.fail_connect = [pyatv_errors.ConnectionFailedError("a"), pyatv_errors.ConnectionFailedError("b")]
+    with pytest.raises(ConnectionError, match="b"):
+        live.connect()
+
+
+def test_a_refused_pairing_is_reported_not_taken_for_off(live, wired):
+    wired.fail_connect = [pyatv_errors.AuthenticationError("bad creds")] * 4
+    with pytest.raises(core.PairingRefused, match="Pair it again"):
+        live.power_state()
+    with pytest.raises(core.PairingRefused):
+        live.scan_apps()  # not the saved list, which would hide it
+
+
+def test_now_playing_failing_to_start_is_said_and_casting_goes_on(live, wired, box, events):
+    wired.push_fails = pyatv_errors.NotSupportedError("no MRP")
+    live.connect()
+    assert live.push_error and ("error", f"Now playing isn't available ({live.push_error})") in events
+    r = live.renderer()
+    r.load("http://192.0.2.1:8199/tok/a.mp4", "a", "video/mp4", "video", 1)
+    r.play()
+    assert r.state() == "PLAYING" and r.position() == (0, 0)  # AirPlay holds the stream: that's all there is
+    r.stop()
+
+
+def test_now_playing_failing_without_airplay_paired_is_expected(wired, box, events, config):
+    cfg = core.load_config()
+    del cfg["appletv"]["credentials"]["airplay"]
+    wired.push_fails = pyatv_errors.NotSupportedError("no MRP")
+    c = appletv.AppleTV(cfg, lambda e, d: events.append((e, d)))
+    try:
+        c.connect()
+    finally:
+        c.close()
+    assert events == [("connected", None)]
+
+
+def test_a_lost_connection_is_reported_unless_closing(live, wired, box, events):
+    live.connect()
+    live._listener.connection_lost(Exception("gone"))
+    assert live.atv is None and events[-1] == ("disconnected", None)
+    live.connect()
+    live._listener.powerstate_update(PowerState.On, PowerState.Off)
+    assert events[-1] == ("power", "off")
+    live.closing = True
+    live._listener.connection_closed()
+    assert events[-1] == ("power", "off")
+
+
+def test_sleep_counts_only_once_the_box_reports_standby(client, box, monkeypatch):
+    assert client.turn_off() and box.power.power_state == PowerState.Off
+
+    async def no_answer():
+        box.log.append("turn_off")
+    monkeypatch.setattr(box.power, "turn_off", no_answer)  # still on: tvOS ignored it
+    box.power.power_state = PowerState.On
+    assert not client.turn_off()
+    assert client.turn_off_failed == "Sent sleep, but the Apple TV still reports it's on"
+
+    calls = []
+
+    async def gone(fn):  # the sleep command goes through, then nothing answers
+        calls.append(fn)
+        if len(calls) > 1:
+            raise pyatv_errors.ConnectionFailedError("no route to host")
+        return await fn(box)
+    monkeypatch.setattr(client, "_do", gone)
+    assert not client.turn_off()  # stopped answering: not taken as asleep
+    assert "stopped answering" in client.turn_off_failed and "no route" in client.turn_off_failed
+
+
+# -- discover and the appletv CLI
+
+
+def found_box(name, ident, os="TvOS", companion=True, model="AppleTV4KGen3"):
+    from pyatv.const import DeviceModel, OperatingSystem
+    return SimpleNamespace(name=name, identifier=ident, address="192.0.2.70",
+                           device_info=SimpleNamespace(operating_system=getattr(OperatingSystem, os),
+                                                       model=getattr(DeviceModel, model),
+                                                       model_str="Apple TV 4K (gen 3)"),
+                           get_service=lambda proto: object() if companion else None)
+
+
+def test_discover_keeps_apple_tvs_sorted_and_asks_addresses_only_if_multicast_finds_none(monkeypatch):
+    import pyatv
+
+    scans = []
+    multicast = [found_box("Kitchen", "K"), found_box("den", "D"), found_box("HomePod", "H", os="TvOS",
+                 companion=False), found_box("Mac", "M", os="MacOS")]
+
+    async def scan(loop, **kw):
+        scans.append(kw.get("hosts"))
+        return [found_box("Den", "D2", model="Unknown")] if kw.get("hosts") else multicast
+    monkeypatch.setattr(pyatv, "scan", scan)
+    assert [(b["name"], b["identifier"]) for b in appletv.discover(timeout=1, hosts=["192.0.2.70"])] == [
+        ("den", "D"), ("Kitchen", "K")]
+    assert scans == [None]
+    multicast = []
+    assert appletv.discover(timeout=1, hosts=["", "192.0.2.70"]) == [
+        {"name": "Den", "model": "Apple TV", "host": "192.0.2.70", "identifier": "D2"}]
+    assert scans == [None, None, ["192.0.2.70"]]
+
+
+@pytest.fixture
+def two_boxes(monkeypatch):
+    boxes = [{"name": "Den", "model": "Apple TV 4K", "host": "192.0.2.70", "identifier": "D"},
+             {"name": "Kitchen", "model": "Apple TV HD", "host": "192.0.2.71", "identifier": "K"}]
+    monkeypatch.setattr(appletv, "discover", lambda hosts=(): boxes)
+    return boxes
+
+
+def test_cli_appletv_scan_lists_the_boxes(two_boxes, capsys):
+    core.cli(["appletv", "scan"])
+    out = capsys.readouterr().out
+    assert "1. Den" in out and "2. Kitchen" in out
+
+
+def test_cli_appletv_pair_pairs_the_picked_box_and_skips_a_missing_step(two_boxes, monkeypatch, config, capsys):
+    made = []
+
+    class FakePairing:
+        STEPS = appletv.Pairing.STEPS
+
+        def __init__(self, identifier, name, host):
+            made.append(identifier)
+            self.pins = []
+
+        def begin(self, step):
+            return step == "companion"  # the box doesn't offer AirPlay
+
+        def pin(self, pin):
+            self.pins.append(pin)
+
+        def save(self, cfg):
+            made.append(("saved", self.pins))
+
+        def close(self):
+            made.append("closed")
+    answers = iter(["2", "1234"])
+    monkeypatch.setattr(appletv, "Pairing", FakePairing)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    core.cli(["appletv", "pair"])
+    assert made == ["K", ("saved", ["1234"]), "closed"]
+    assert "doesn't offer airplay; skipped" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("answer", ["3", "x", KeyboardInterrupt])
+def test_cli_appletv_pair_saves_nothing_on_a_bad_pick_or_ctrl_c(two_boxes, monkeypatch, config, answer):
+    before = config.read_text()
+    saved = []
+
+    class FakePairing:
+        STEPS = appletv.Pairing.STEPS
+
+        def __init__(self, *a):
+            pass
+
+        def begin(self, step):
+            return True
+
+        def pin(self, pin):
+            pass
+
+        def save(self, cfg):
+            saved.append(cfg)
+
+        def close(self):
+            pass
+
+    def ask(prompt=""):
+        if "which one" in prompt:
+            if answer is KeyboardInterrupt:
+                return "1"
+            return answer
+        raise KeyboardInterrupt
+    monkeypatch.setattr(appletv, "Pairing", FakePairing)
+    monkeypatch.setattr("builtins.input", ask)
+    with pytest.raises(SystemExit, match="No Apple TV picked|nothing was saved"):
+        core.cli(["appletv", "pair"])
+    assert not saved and config.read_text() == before

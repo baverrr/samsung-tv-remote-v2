@@ -150,8 +150,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             tv = self.bridge.tv
             if tv.power_state() == "on" and not tv.turn_off():
-                print("The Apple TV still reports it's on" if tv.kind == "appletv" else core.TURN_OFF_FAILED,
-                      file=sys.stderr)
+                print(tv.turn_off_failed, file=sys.stderr)
         except (OSError, websocket.WebSocketException, RuntimeError) as e:
             print(f"Power off failed: {core.describe_error(e)}", file=sys.stderr)
         finally:

@@ -1102,7 +1102,7 @@ class RemoteWindow(QWidget):
                 if self.tv.turn_off():  # don't claim it until the TV says so
                     self.post("off_done")
                 else:
-                    self.post("error", "The Apple TV still reports it's on" if self.apple else core.TURN_OFF_FAILED)
+                    self.post("error", self.tv.turn_off_failed)
             else:
                 self.post("status", f"Waking the {noun}…")
                 self.tv.wake()

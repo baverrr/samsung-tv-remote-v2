@@ -800,6 +800,9 @@ def test_seek_asks_the_tv_for_its_position_once(monkeypatch, tmp_path):
 class ScriptedTV:
     """A renderer whose GetTransportInfo replies follow a script (a state, or an exception to raise)."""
 
+    kinds = frozenset({"image", "video", "audio"})
+    error = None
+
     def __init__(self, states, position=(5, 100)):
         self.states, self.pos, self.loaded = list(states), position, []
 

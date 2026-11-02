@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn, Protocol
 
 import websocket
 
@@ -166,7 +166,37 @@ def pick_device(cfg, wanted=None):
     raise ConfigError(SAMSUNG_NOT_SET_UP)
 
 
-def make_client(cfg, device, on_event=lambda event, data: None):
+class Client(Protocol):
+    """What the window, CLI and bridge use of a device client: TV (Samsung) or appletv.AppleTV. cfg is
+    this device's part of the config (all of it for Samsung), root the whole file save_config() writes.
+    Device-only extras (TV.locate, AppleTV.now_playing and seek) are reached after checking kind."""
+
+    kind: str
+    cfg: dict
+    root: dict
+    host: str
+    unreachable: str | None  # why the last power_state() said "off"
+    apps_from_cache: bool  # the last scan_apps() couldn't ask and returned the saved list
+
+    @property
+    def turn_off_failed(self) -> str: ...  # what to say when turn_off() returned False
+    def info(self, host=None) -> Any: ...
+    def power_state(self) -> str: ...  # "on", "standby" or "off"
+    def connect(self) -> Any: ...
+    def resolve_key(self, name) -> str: ...
+    def key(self, key) -> None: ...
+    def text(self, s) -> None: ...
+    def scan_apps(self) -> list: ...
+    def probe_app(self, app_id) -> Any: ...
+    def launch(self, app) -> None: ...
+    def wake(self) -> None: ...
+    def wait_until_on(self, timeout=25) -> bool: ...
+    def turn_off(self) -> bool: ...
+    def renderer(self) -> Any: ...  # for cast.Caster: cast.Renderer or appletv.AirPlayRenderer
+    def close(self) -> None: ...
+
+
+def make_client(cfg, device, on_event=lambda event, data: None) -> Client:
     """The client for a device: TV (Samsung) or appletv.AppleTV, which offer the same methods."""
     if device == "appletv":
         import appletv
@@ -246,6 +276,7 @@ def key_for_id(app_id):
 
 class TV:
     kind = "samsung"
+    turn_off_failed = TURN_OFF_FAILED  # what to say when turn_off() returned False
 
     def __init__(self, cfg, on_event=lambda event, data: None):
         self.cfg = cfg
@@ -704,7 +735,7 @@ def run_command(tv, cfg, cmd, rest):
             if tv.turn_off():
                 print("Apple TV is asleep" if apple else "TV turned off")
             else:
-                print("The Apple TV still reports it's on" if apple else TURN_OFF_FAILED)
+                print(tv.turn_off_failed)
         elif state == "standby":
             print("Apple TV is already asleep" if apple else "TV is already in standby")
         else:

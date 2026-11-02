@@ -240,6 +240,7 @@ class Renderer:
     TV's real volume, so volume goes through the websocket VOL keys instead."""
 
     kinds = frozenset({"image", "video", "audio"})  # what it can show (an AirPlay renderer: no photos)
+    error = None  # why the last play failed, for the status line (only an AirPlay renderer knows)
 
     def __init__(self, tv_host):
         self.url = f"http://{tv_host}:{DMR_PORT}/upnp/control/AVTransport1"
@@ -503,8 +504,7 @@ class Caster:
                         err = self.server and self.server.read_error  # this machine couldn't serve it?
                         self._skip(f"The TV hit an error playing {cur.name}" + (f" ({err})" if err else ""))
                     else:
-                        why = getattr(self.tv, "error", None)  # an AirPlay renderer says why
-                        why = why if isinstance(why, str) else None
+                        why = self.tv.error
                         self._skip(f"The TV couldn't play {cur.name}" + (f": {why}" if why else ""))
                 elif state in ("STOPPED", "NO_MEDIA_PRESENT"):
                     if not self._seen_playing:
