@@ -720,7 +720,8 @@ def test_connecting_sets_both_credentials_listens_and_remembers_the_address(live
     assert wired.creds == {"companion": "test-companion", "airplay": "test-airplay"}
     assert box.listener is live._listener and box.power.listener is live._listener
     assert box.push_updater.listener is live._listener and "push" in box.log
-    assert events == [("connected", None)] and live.push_error is None
+    assert box.keyboard.listener is live._listener
+    assert events == [("connected", None), ("keyboard", True)] and live.push_error is None  # a field is open
     assert live.host == "192.0.2.61" and json.loads(config.read_text())["appletv"]["host"] == "192.0.2.61"
     live.connect()
     assert wired.connects == 1  # already connected
@@ -782,7 +783,7 @@ def test_now_playing_failing_without_airplay_paired_is_expected(wired, box, even
         c.connect()
     finally:
         c.close()
-    assert events == [("connected", None)]
+    assert events == [("connected", None), ("keyboard", True)]  # no "Now playing isn't available"
 
 
 def test_a_lost_connection_is_reported_unless_closing(live, wired, box, events):
@@ -928,3 +929,26 @@ def test_cli_appletv_pair_saves_nothing_on_a_bad_pick_or_ctrl_c(two_boxes, monke
     with pytest.raises(SystemExit, match="No Apple TV picked|nothing was saved"):
         core.cli(["appletv", "pair"])
     assert not saved and config.read_text() == before
+
+
+# -- typing
+
+
+def test_typing_replaces_the_field_reads_it_and_clears_it(client, box):
+    box.keyboard.text_get = lambda: asyncio.sleep(0, "sev")
+    box.keyboard.text_clear = lambda: asyncio.sleep(0, box.log.append("clear"))
+    assert client.typed() == "sev"
+    client.text("severance")
+    client.text("")
+    assert box.log == [("text", "severance"), "clear"]
+    box.keyboard.text_focus_state = KeyboardFocusState.Unfocused
+    with pytest.raises(RuntimeError, match="No text field is open"):
+        client.text("x")
+
+
+def test_a_text_field_opening_or_closing_is_reported(live, wired, box, events):
+    live.connect()
+    live._listener.focusstate_update(KeyboardFocusState.Focused, KeyboardFocusState.Unfocused)
+    assert events[-1] == ("keyboard", False)
+    live._listener.focusstate_update(KeyboardFocusState.Unfocused, KeyboardFocusState.Focused)
+    assert events[-1] == ("keyboard", True)

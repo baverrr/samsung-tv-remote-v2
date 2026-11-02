@@ -89,6 +89,12 @@ T = {
     "fg": "#f1f3f7", "muted": "#a3abba",
     "accent": "#5b93ff", "accent_fill": "#2f6fe4", "accent_hover": "#3d7cf0", "accent_down": "#2559bd",
     "danger": "#e5484d", "danger_hover": "#f05a5f", "ok": "#3dd68c", "warn": "#f5a524", "off": "#6b7280",
+    # The Apple TV remote is drawn as the Siri Remote: a silver aluminium body (siri, lit to siri_top across
+    # its middle) with black keys. The keys meet 3:1 against the body, their icons (key_fg) 4.5:1 against
+    # every key state, and the focus ring 3:1 against them too.
+    "siri": "#b9bcc2", "siri_top": "#e6e7ea", "siri_edge": "#8c9098",
+    "key": "#1c1c1e", "key_hover": "#38383c", "key_down": "#000000", "key_ring": "#4a4a4f", "key_fg": "#f5f5f7",
+    "key_dot": "#8e8e93",
 }
 DESIGN_PT = 10  # the system font size the pixel sizes below were drawn for
 
@@ -135,6 +141,19 @@ QFrame#rocker QToolButton:pressed { background: @pressed; }
 QLabel#rockerLabel { color: @muted; font-size: @fs_caption; font-weight: 700; letter-spacing: 1px; }
 
 QFrame#card { background: @body_top; border: 1px solid @border; border-radius: 18px; }
+
+QFrame#siri {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 @siri, stop:0.45 @siri_top, stop:1 @siri);
+    border: 1px solid @siri_edge;
+}
+QToolButton[tone="siri"] { background: @key; border: 1px solid @key_down; }
+QToolButton[tone="siri"]:hover { background: @key_hover; }
+QToolButton[tone="siri"]:pressed { background: @key_down; }
+QFrame#siriPill { background: @key; border: 1px solid @key_down; }
+QFrame#siriPill QToolButton { background: transparent; border-color: transparent; }
+QFrame#siriPill QToolButton:hover { background: @key_hover; }
+QFrame#siriPill QToolButton:pressed { background: @key_down; }
+QLabel#keyboardState[open="true"] { color: @ok; }
 QFrame#card[drag="true"] { border: 1px dashed @accent; }
 
 QLineEdit {
@@ -182,6 +201,7 @@ QMessageBox { background: @body; }
 QToolButton:focus, QToolButton[tone]:focus { border: 2px solid @focus; padding: 5px 9px; }
 QToolButton[tone="tile"]:focus { padding: 9px; }
 QFrame#rocker QToolButton:focus { border: 2px solid @focus; }
+QFrame#siriPill QToolButton:focus { border: 2px solid @focus; }
 QLineEdit:focus { border: 2px solid @focus; padding: 7px 9px; }
 QSpinBox:focus { border: 2px solid @focus; padding: 2px 5px; }
 QCheckBox::indicator:focus { border: 2px solid @focus; }
@@ -491,6 +511,55 @@ class DPad(QWidget):
         p.drawText(QRectF(c.x() - r_ok, c.y() - r_ok, 2 * r_ok, 2 * r_ok), Qt.AlignmentFlag.AlignCenter, "OK")
 
 
+class ClickPad(DPad):
+    """The Siri Remote's clickpad: a black touch surface whose outer ring clicks up, down, left and right
+    and whose centre selects. The same five buttons as DPad, painted like the remote: no printed arrows,
+    a dot at each click point, and the touch ring around the centre."""
+
+    def __init__(self, make_key):
+        super().__init__(make_key)
+        d = px(172)
+        self.setFixedSize(d, d)
+        self._place_keys()
+
+    def _geometry(self):
+        r = self.width() / 2 - 1.5
+        return QPointF(self.width() / 2, self.height() / 2), r, r * 0.46
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        c, r, r_ok = self._geometry()
+        p.setPen(QPen(QColor(T["key_down"]), 1))
+        p.setBrush(QColor(T["key"]))
+        p.drawEllipse(c, r, r)
+        dot = px(3)
+        for key, angle in self.ANGLES.items():
+            b = self.keys[key]
+            state = self._state(b)
+            if state:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(T["key_hover" if state == "hover" else "key_down"]))
+                p.drawPath(self._wedge(key))
+            if b.hasFocus():
+                p.setPen(QPen(QColor(T["focus"]), 2))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawPath(self._wedge(key, inset=2))
+            mid, rad = (r + r_ok) / 2 + 2, math.radians(angle)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(T["key_dot"]))
+            p.drawEllipse(QPointF(c.x() + math.cos(rad) * mid, c.y() - math.sin(rad) * mid), dot, dot)
+        ok = self.keys["KEY_ENTER"]
+        state = self._state(ok)
+        p.setPen(QPen(QColor(T["key_ring"]), 1.5))  # the touch ring around the centre
+        p.setBrush(QColor({"pressed": T["key_down"], "hover": T["key_hover"]}.get(state or "", T["key"])))
+        p.drawEllipse(c, r_ok, r_ok)
+        if ok.hasFocus():
+            p.setPen(QPen(QColor(T["focus"]), 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(c, r_ok - 3, r_ok - 3)
+
+
 def animation_factor():
     """KDE's animation duration multiplier (System Settings › Animation speed; larger is slower);
     0 means animations are turned off."""
@@ -698,7 +767,8 @@ SHORTCUT_HELP = [
 SHORTCUT_HELP_APPLE = [
     ("Arrow keys", "Move"), ("Enter", "Select"), ("Esc or Backspace", "Back"), ("H", "TV / Home"),
     ("+ / −", "Volume"), ("Space / P", "Play / Pause"), ("[ / ]", "Skip back / ahead"), ("C", "Control Center"),
-    ("T", "Type text"), ("Tab", "Move between on-screen keys (Space or Enter presses, Esc leaves)"),
+    ("T", "Keyboard: type on the Apple TV as you type (Enter or Esc goes back to the remote keys)"),
+    ("Tab", "Move between on-screen keys (Space or Enter presses, Esc leaves)"),
     ("F11", "Full screen"), ("?", "This list"),
 ]
 # The Apple TV's versions of STATUS_EVENTS ("pairing" never happens: it pairs once, in setup).
@@ -707,6 +777,88 @@ STATUS_EVENTS_APPLE = {
     "off_done": ("Apple TV is asleep · press power to wake it", "off"),
     "off": ("Apple TV isn't answering · check it's on", "off"),
 }
+
+
+class KeyboardPanel(QFrame):
+    """Typing from this computer's keyboard into the Apple TV, live: each change replaces the text in the
+    box's open text field (a search, a sign-in), so it shows on the TV as you type. The box reports when a
+    text field opens, and the panel takes the keyboard then; Enter or Esc gives it back to the remote."""
+
+    DELAY_MS = 120  # a pause in typing this long sends what's typed (keeps a fast typist to a few requests)
+
+    def __init__(self, remote):
+        super().__init__()
+        self.setObjectName("card")
+        self.remote = remote
+        self.latest = ""  # the text as last typed; a send that's no longer the latest is skipped
+        self.open = False
+        v = QVBoxLayout(self)
+        v.setContentsMargins(px(14), px(12), px(14), px(14))
+        v.setSpacing(px(8))
+        self.state = label("", name="keyboardState")
+        self.state.setProperty("role", "caption")
+        v.addLayout(hbox(label("KEYBOARD", "section"), None, self.state))
+        self.entry = QLineEdit()
+        self.entry.setAccessibleName("Text to type on the Apple TV")
+        self.entry.setToolTip("What you type here appears on the Apple TV as you type. Enter or Esc goes "
+                              "back to the remote keys (T comes back here)")
+        self.entry.addAction(icon("keyboard", T["muted"], px(18)), QLineEdit.ActionPosition.LeadingPosition)
+        self.entry.textEdited.connect(self.edited)
+        clear = button(icon_name="x", tip="Clear the Apple TV's text field", tone="ghost", round=36,
+                       on_click=self.clear, icon_colour=T["muted"], icon_size=18)
+        v.addLayout(hbox(self.entry, clear))
+        self.timer = QTimer(self, singleShot=True, interval=self.DELAY_MS)
+        self.timer.timeout.connect(self.send)
+        self.set_open(False)
+
+    def set_open(self, is_open):
+        """The box opened (True) or closed (False) a text field."""
+        self.open = is_open
+        self.state.setText("Text field open" if is_open else "No text field open")
+        self.state.setProperty("open", "true" if is_open else "false")
+        self.state.style().unpolish(self.state)
+        self.state.style().polish(self.state)
+        self.entry.setPlaceholderText("Type here: it appears on the TV" if is_open else
+                                      "Open a search box on the Apple TV, then type")
+        if is_open:
+            self.remote.run(lambda: self.remote.post("keyboard_text", self.remote.tv.typed()),
+                            "Couldn't read the Apple TV's text field")
+            self.entry.setFocus()
+        else:
+            self.timer.stop()
+            self.latest = ""
+            self.entry.clear()
+            if self.entry.hasFocus():
+                self.remote.setFocus()
+
+    def show_text(self, text):
+        """What the box's field holds as it opens (a search typed before), unless typing has started."""
+        if self.open and not self.timer.isActive() and self.entry.text() == self.latest:
+            self.latest = text or ""
+            self.entry.setText(self.latest)
+
+    def edited(self, text):
+        self.latest = text
+        self.timer.start()
+
+    def send(self):
+        self.timer.stop()
+        text = self.latest
+
+        def go():
+            if text == self.latest:  # typing went on while this waited: the newer text is on its way
+                self.remote.tv.text(text)
+        self.remote.run(go, "Couldn't type on the Apple TV")
+
+    def flush(self):
+        """Send what's still waiting for the typing pause (Enter, Esc)."""
+        if self.timer.isActive():
+            self.send()
+
+    def clear(self):
+        self.entry.clear()
+        self.edited("")
+        self.send()
 
 
 class RemoteWindow(QWidget):
@@ -736,21 +888,23 @@ class RemoteWindow(QWidget):
         self.apps_dialog = None
         self.favorite_popup = None
         self.key_buttons = {}
+        self.keyboard = None
 
         body = frame("body")
         v = QVBoxLayout(body)
         v.setContentsMargins(px(20), px(20), px(20), px(14))
         v.setSpacing(px(12))
-        v.addLayout(self._top_row())
-        if self.apple:  # the Siri Remote: d-pad, Back · TV · Play/Pause, volume; now playing above
-            v.addLayout(self._airplay_row())
+        if self.apple:  # the Siri Remote beside a panel: what's playing, AirPlay, the keyboard and apps
+            v.addLayout(hbox(self._display(), self.key_button(
+                "KEY_MENU", icon_name="layout-grid", tip="Control Center (C)", round=44), spacing=px(10)))
             self.now_card = NowPlayingCard(self)
             v.addWidget(self.now_card)
-            self.dpad = DPad(self.key_button)
-            v.addWidget(self.dpad, 0, Qt.AlignmentFlag.AlignHCenter)
-            v.addLayout(self._apple_nav_row())
-            v.addLayout(self._apple_volume_row())
+            v.addLayout(self._apple_media_row())
+            self.keyboard = KeyboardPanel(self)
+            self.entry = self.keyboard.entry
+            v.addWidget(self.keyboard)
         else:
+            v.addLayout(self._top_row())
             v.addLayout(self._cast_row())
             self.dpad = DPad(self.key_button)
             v.addWidget(self.dpad, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -758,11 +912,24 @@ class RemoteWindow(QWidget):
             v.addLayout(self._volume_row())
             v.addLayout(self._media_row())
         self._apps_section(v)
-        v.addLayout(self._text_row())
+        if self.apple:
+            v.addStretch(1)
+        else:
+            v.addLayout(self._text_row())
         help_btn = button("Shortcuts", "circle-help", tip="Keyboard shortcuts (?)", tone="ghost",
                           on_click=self.show_shortcuts, icon_size=16, icon_colour=T["muted"])
         v.addLayout(hbox(None, help_btn, self._device_button(), None))
-        place_body(self, body, px(10))
+        if self.apple:
+            body.setFixedWidth(px(320))
+            pair = QWidget()
+            h = QHBoxLayout(pair)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(px(18))
+            h.addWidget(self._siri_remote(), 0, Qt.AlignmentFlag.AlignTop)
+            h.addWidget(body)
+            place_body(self, pair, px(14))
+        else:
+            place_body(self, body, px(10))
 
         self.progress_pending = False
         self.poll = QTimer(self, interval=1000)
@@ -778,6 +945,17 @@ class RemoteWindow(QWidget):
         """Power · status display · source, each key with its printed label."""
         self.power_btn = button(icon_name="power", tip="Power (wakes the TV when it's off)", tone="danger",
                                 round=44, on_click=self.power, icon_colour="#ffffff")
+        right = captioned(self.key_button("KEY_SOURCE", icon_name="import", tip="Source / input (S)",
+                                          round=44), "Source")
+        top = QHBoxLayout()
+        top.setSpacing(px(10))
+        top.addWidget(captioned(self.power_btn, "Power"), 0, Qt.AlignmentFlag.AlignTop)
+        top.addWidget(self._display(), 1, Qt.AlignmentFlag.AlignTop)
+        top.addWidget(right, 0, Qt.AlignmentFlag.AlignTop)
+        return top
+
+    def _display(self):
+        """The status display: a coloured dot and what the remote is doing."""
         display = frame("display")
         display.setFixedHeight(px(44))
         dh = QHBoxLayout(display)
@@ -790,50 +968,67 @@ class RemoteWindow(QWidget):
         dh.addWidget(self.status_dot)
         dh.addWidget(self.status_text, 1)
         self.set_status("Connecting…", "warn")
-        if self.apple:
-            right = captioned(self.key_button("KEY_MENU", icon_name="layout-grid", tip="Control Center (C)",
-                                              round=44), "Control")
-        else:
-            right = captioned(self.key_button("KEY_SOURCE", icon_name="import", tip="Source / input (S)",
-                                              round=44), "Source")
-        top = QHBoxLayout()
-        top.setSpacing(px(10))
-        top.addWidget(captioned(self.power_btn, "Power"), 0, Qt.AlignmentFlag.AlignTop)
-        top.addWidget(display, 1, Qt.AlignmentFlag.AlignTop)
-        top.addWidget(right, 0, Qt.AlignmentFlag.AlignTop)
-        return top
+        return display
 
-    def _airplay_row(self):
+    def _siri_remote(self):
+        """The Siri Remote: power at the top, the clickpad, then Back · TV, Play/Pause beside the volume
+        key, and the keyboard key where the remote has Mute (Apple's remote protocol has no mute)."""
+        remote = frame("siri")
+        w = px(208)
+        remote.setFixedWidth(w)
+        remote.setMinimumHeight(round(w * 2.75))  # the remote's long body: plain aluminium below the keys
+        remote.setStyleSheet(f"QFrame#siri {{ border-radius: {px(44)}px; }}")
+        remote.setAccessibleName("Apple TV remote")
+        v = QVBoxLayout(remote)
+        v.setContentsMargins(px(18), px(18), px(18), px(40))
+        v.setSpacing(px(22))
+
+        def key(k, icon_name, tip, d=52):
+            return self.key_button(k, icon_name=icon_name, tip=tip, tone="siri", round=d,
+                                   icon_colour=T["key_fg"], icon_size=22)
+        self.power_btn = button(icon_name="power", tip="Power (wakes the Apple TV when it's asleep)", tone="siri",
+                                round=34, on_click=self.power, icon_colour=T["key_fg"], icon_size=16)
+        v.addLayout(hbox(None, self.power_btn))
+        self.dpad = ClickPad(self.key_button)
+        v.addWidget(self.dpad, 0, Qt.AlignmentFlag.AlignHCenter)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(px(34))
+        grid.setVerticalSpacing(px(16))
+        grid.addWidget(key("KEY_RETURN", "chevron-left", "Back (Esc)"), 0, 0)
+        grid.addWidget(key("KEY_HOME", "tv", "TV / Home (H)"), 0, 1)
+        grid.addWidget(key("KEY_PLAY", "play-pause", "Play / pause (Space)"), 1, 0)
+        type_key = button(icon_name="keyboard", tip="Keyboard: type on the Apple TV (T)", tone="siri", round=52,
+                          on_click=lambda: self.entry.setFocus(), icon_colour=T["key_fg"], icon_size=22)
+        grid.addWidget(type_key, 2, 0)
+        pill = frame("siriPill")
+        pill.setFixedWidth(px(52))
+        pill.setStyleSheet(f"QFrame#siriPill {{ border-radius: {px(26)}px; }}")
+        col = QVBoxLayout(pill)
+        col.setContentsMargins(px(3), px(3), px(3), px(3))
+        col.setSpacing(0)
+        for k, i, t in (("KEY_VOLUP", "plus", "Volume up (+)"), ("KEY_VOLDOWN", "minus", "Volume down (−)")):
+            if k == "KEY_VOLDOWN":
+                col.addStretch(1)
+            col.addWidget(self.key_button(k, icon_name=i, tip=t, round=46, repeat=True, icon_colour=T["key_fg"]))
+        grid.addWidget(pill, 1, 1, 2, 1)
+        keys = QHBoxLayout()
+        keys.addStretch(1)
+        keys.addLayout(grid)
+        keys.addStretch(1)
+        v.addLayout(keys)
+        v.addStretch(1)
+        return remote
+
+    def _apple_media_row(self):
+        """Skip back · AirPlay cast · skip ahead, under what's playing."""
         cast_btn = button("AirPlay cast", "cast", tip="Play videos or music from this PC on the Apple TV (AirPlay)",
                           tone="outline", min_size=(0, 40), expand=True, on_click=self.open_cast)
         if not appletv.can_cast():
             cast_btn.setEnabled(False)
             cast_btn.setToolTip(appletv.CAST_UNPATCHED)
-        return hbox(cast_btn)
-
-    def _apple_nav_row(self):
-        """Back · TV (home) · play/pause, as on the Siri Remote."""
-        nav = [captioned(self.key_button(k, icon_name=i, tip=t, round=48), c)
-               for k, i, t, c in (("KEY_RETURN", "undo-2", "Back (Esc)", "Back"),
-                                  ("KEY_HOME", "house", "TV / Home (H)", "TV"),
-                                  ("KEY_PLAY", "play", "Play / pause (Space)", "Play/Pause"))]
-        return hbox(None, *nav, None, spacing=px(26))
-
-    def _apple_volume_row(self):
-        """Skip back · VOL rocker · skip ahead."""
-        back = captioned(self.key_button("KEY_REWIND", icon_name="rewind", tip="Skip back ([)", round=44), "Skip back")
-        ahead = captioned(self.key_button("KEY_FF", icon_name="fast-forward", tip="Skip ahead (])", round=44),
-                          "Skip ahead")
-        row = QHBoxLayout()
-        row.addStretch(1)
-        row.addWidget(back, 0, Qt.AlignmentFlag.AlignVCenter)
-        row.addSpacing(px(18))
-        row.addWidget(self.rocker("VOL", ("KEY_VOLUP", "plus", "Volume up (+)"),
-                                  ("KEY_VOLDOWN", "minus", "Volume down (−)")))
-        row.addSpacing(px(18))
-        row.addWidget(ahead, 0, Qt.AlignmentFlag.AlignVCenter)
-        row.addStretch(1)
-        return row
+        back = self.key_button("KEY_REWIND", icon_name="rewind", tip="Skip back ([)", round=40)
+        ahead = self.key_button("KEY_FF", icon_name="fast-forward", tip="Skip ahead (])", round=40)
+        return hbox(back, cast_btn, ahead)
 
     def _device_button(self):
         """Which remote this is (Samsung TV / Apple TV), with a menu to switch or set one up."""
@@ -1128,6 +1323,10 @@ class RemoteWindow(QWidget):
         self.post("status", "Pick the TV in Network Displays, then Allow on the TV")
 
     def send_text(self):
+        if self.keyboard:  # typed live: only what's waiting for the typing pause is left to send
+            self.keyboard.flush()
+            self.setFocus()
+            return
         s = self.entry.text()
         if s:
             self.run(lambda: self.tv.text(s), "Couldn't type the text")
@@ -1187,6 +1386,9 @@ class RemoteWindow(QWidget):
                 self.run(lambda: self.cfg["apps"] or self.post("apps", self.tv.scan_apps()), "Couldn't load the apps")
         elif event == "disconnected" and self.turned_off:
             pass  # the TV drops the connection as it goes to standby; keep "TV turned off"
+        elif event == "disconnected" and self.keyboard and self.keyboard.open:
+            self.keyboard.set_open(False)
+            self.set_status(*self.status_events[event])
         elif event in self.status_events:
             self.turned_off = event == "off_done"
             self.set_status(*self.status_events[event])
@@ -1202,6 +1404,12 @@ class RemoteWindow(QWidget):
         elif event == "artwork":
             if self.now_card:
                 self.now_card.show_artwork(data)
+        elif event == "keyboard":  # the Apple TV opened (True) or closed a text field
+            if self.keyboard and data != self.keyboard.open:
+                self.keyboard.set_open(data)
+        elif event == "keyboard_text":
+            if self.keyboard:
+                self.keyboard.show_text(data)
         elif event == "power":  # the Apple TV went to sleep or woke (its own remote, or a timer)
             if data == "off":
                 self.turned_off = True
@@ -1251,6 +1459,8 @@ class RemoteWindow(QWidget):
                 self.send_text()
                 return True
             if k == Qt.Key.Key_Escape:
+                if self.keyboard:
+                    self.keyboard.flush()
                 self.setFocus()
                 return True
             return False

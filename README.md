@@ -8,8 +8,8 @@ A desktop remote control for Linux, in two versions you switch between in the wi
 
 - **Samsung TV:** for Samsung Tizen smart TVs (2016 and later). It sends remote keys, opens apps, turns the
   TV on and off, casts photos, videos and music from this PC, and mirrors the screen.
-- **Apple TV:** for Apple TV boxes (tvOS), laid out like the Siri Remote. It sends remote keys, opens any
-  app on the box, types into search boxes, sleeps and wakes it, shows **what's playing** (title, show, artwork
+- **Apple TV:** for Apple TV boxes (tvOS), with its own window drawn as a silver Siri Remote. It sends remote
+  keys, opens any app on the box, types from this PC's keyboard into the TV as you type, sleeps and wakes it, shows **what's playing** (title, show, artwork
   and a seek bar), and casts videos and music from this PC over **AirPlay**.
 
 Everything goes over the local network. There's a Qt window for everyday use and a command line for scripts.
@@ -26,7 +26,7 @@ Apple TV 4K (3rd generation, tvOS 27) on Ubuntu 26.04 with KDE Plasma on Wayland
 </p>
 
 <p align="center">
-  <img src="docs/remote-appletv.png" alt="The Apple TV remote: power, status and Control Center keys, an AirPlay cast button, a now-playing card with artwork, title, episode and a seek bar, a d-pad, Back, TV and Play/Pause keys, skip back and ahead around a volume rocker, app shortcuts, a text box and the device menu" width="300">
+  <img src="docs/remote-appletv.png" alt="The Apple TV remote: a silver Siri Remote with a power key, a black clickpad, Back, TV, Play/Pause and keyboard keys and a volume key, beside a panel with the status and Control Center key, a now-playing card with artwork, title, episode and a seek bar, skip back, AirPlay cast and skip ahead, a keyboard box showing a text field open on the TV, app shortcuts and the device menu" width="546">
 </p>
 
 > [!IMPORTANT]
@@ -51,13 +51,19 @@ Apple TV 4K (3rd generation, tvOS 27) on Ubuntu 26.04 with KDE Plasma on Wayland
 
 **Apple TV**
 
-- **Siri Remote layout:** d-pad with Select in the middle, Back, TV (home), Play/Pause, volume, skip back and
-  ahead, and Control Center. No keys the Apple TV doesn't have (channel, source, info).
+- **Siri Remote window:** switching to the Apple TV swaps the Samsung layout for a silver Siri Remote: power
+  at the top, the black clickpad (its ring clicks up, down, left and right, its centre selects), Back and
+  TV, Play/Pause beside the volume key, and a keyboard key where the real remote has Mute. A panel beside it
+  holds the status, Control Center, what's playing, skip back and ahead, AirPlay cast, the keyboard and the
+  apps. No keys the Apple TV doesn't have (channel, source, info).
 - **Now playing:** title, show and episode or artist, the app, artwork, and a seek bar that follows the box
   and seeks when you drag it. It hides when nothing is playing.
 - **Apps:** the box reports every app it has, so there's no list to maintain. Pick five for the buttons
   (**All apps › Edit apps…**); All apps has the rest, like the Apple TV's home screen.
-- **Typing:** fills the search box (or any text field) that's open on the TV.
+- **Keyboard:** type on this PC and the text appears in the Apple TV's open text field (a search, a sign-in)
+  as you type, Backspace and paste included. When the TV opens a text field the keyboard box says so, shows
+  what the field already holds and takes your typing; Enter or Esc gives the keys back to the remote, and T
+  or the remote's keyboard key brings you back. The × clears the TV's field.
 - **Power:** sleep (confirmed) and wake over the network. No Wake-on-LAN or MAC address needed.
 - **AirPlay cast:** play videos and music from this PC on the Apple TV, with the same queue, seek bar and
   controls as TV Cast.
@@ -302,7 +308,8 @@ the remote, or the remote and the cast window.
 | ? | List the shortcuts |
 
 On the Apple TV remote, Enter is Select, H is TV (home), Space and P are Play/Pause, [ and ] skip back
-and ahead, and C opens Control Center. M, Page Up/Down, S and I do nothing (the Siri Remote has no such keys).
+and ahead, C opens Control Center, and T goes to the keyboard, which types on the TV as you type. M, Page
+Up/Down, S and I do nothing (the Siri Remote has no such keys).
 
 ### Command line
 
@@ -458,7 +465,7 @@ which turns on TVs that ignore Wake-on-LAN.
 | `tools/build-gnd.sh`, `tools/gnd-window-resize.patch` | Builds GNOME Network Displays patched for one-window mirroring |
 | `tools/pyatv-airplay.patch` | pyatv's unreleased AirPlay fix for tvOS 26+ ([pyatv#2846](https://github.com/postlund/pyatv/pull/2846)), applied by `install.sh` |
 | `docs/` | README screenshots (`*.png`, including `remote-appletv.png`), the mirroring diagram (`mirroring.svg`) and the ESP32 remote screen (`esp32-remote.svg`) |
-| `icons/` | Lucide icons used by the windows |
+| `icons/` | Lucide icons used by the windows, and the Siri Remote's play/pause key (`play-pause.svg`, drawn for this project) |
 | `tv-remote.svg` | App icon |
 
 ## Development
@@ -496,7 +503,8 @@ audio, and they use a temporary config.
   (and says so). Videos must be in a format the Apple TV plays (MP4/MOV with H.264 or HEVC; not MKV).
 - **Apple TV: no mute or mirroring.** Mute isn't in the protocols the box offers (the Siri Remote mutes the TV
   over HDMI-CEC or IR), and Linux can't mirror the screen to an Apple TV.
-- **Apple TV: typing replaces** the text in the box's open text field rather than adding to it.
+- **Apple TV: typing replaces** the text in the box's open text field rather than adding to it: the keyboard
+  sends the whole text after each pause in typing (120 ms), which is what tvOS's remote protocol takes.
 
 ## License
 

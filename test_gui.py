@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pytest
 from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import QApplication, QToolButton
+from PySide6.QtWidgets import QApplication, QFrame, QToolButton
 
 import appletv
 import remote_qt as rq
@@ -235,6 +235,10 @@ def contrast(a, b):
     ("focus", "raised", 3), ("focus", "body", 3), ("focus", "body_top", 3), ("focus", "accent_fill", 3),
     ("focus", "danger", 3), ("focus", "hover", 3), ("focus", "inset", 3), ("focus", "pressed", 3),
     ("focus", "accent_hover", 3), ("focus", "accent_down", 3), ("focus", "danger_hover", 3), ("focus", "bg", 3),
+    # the Siri Remote: black keys on silver, their icons and the focus ring on every key state
+    ("key", "siri", 3), ("key", "siri_top", 3), ("siri_edge", "bg", 3), ("key_fg", "key", 4.5),
+    ("key_fg", "key_hover", 4.5), ("key_fg", "key_down", 4.5), ("key_dot", "key", 3), ("focus", "key", 3),
+    ("focus", "key_hover", 3), ("focus", "key_down", 3),
 ])
 def test_contrast(fg, bg, need):
     assert contrast(fg, bg) >= need, f"{fg} on {bg}: {contrast(fg, bg):.2f} < {need}"
@@ -1952,6 +1956,12 @@ def test_apple_layout_is_the_siri_remote(apple):
     names = {b.accessibleName() for b in apple.findChildren(QToolButton)}
     assert "Mirror this screen to the TV" not in names  # no Miracast to an Apple TV
     assert "Play videos or music from this PC on the Apple TV" in names
+    remote = apple.findChild(QFrame, "siri")
+    assert remote is not None and isinstance(apple.dpad, rq.ClickPad)
+    on_remote = {b.accessibleName() for b in remote.findChildren(QToolButton)}
+    assert {"Power", "Back", "TV / Home", "Play / pause", "Volume up", "Volume down", "Keyboard: type on the Apple TV",
+            "OK"} <= on_remote
+    assert apple.power_btn in remote.findChildren(QToolButton)
 
 
 @pytest.mark.parametrize("qt_key, tv_key", KEYS_APPLE, ids=[k.name for k, _ in KEYS_APPLE])
@@ -1964,6 +1974,46 @@ def test_apple_shortcut(qtbot, apple, atv_sent, qt_key, tv_key):
 def test_samsung_only_shortcuts_do_nothing_on_apple_tv(qtbot, apple, atv_sent, qt_key):
     qtbot.keyClick(apple, qt_key)
     expect(qtbot, atv_sent, [])
+
+
+def test_the_keyboard_key_opens_the_keyboard(qtbot, apple):
+    key = next(b for b in apple.findChildren(QToolButton) if b.accessibleName() == "Keyboard: type on the Apple TV")
+    key.click()
+    qtbot.waitUntil(apple.entry.hasFocus)
+
+
+def test_typing_goes_to_the_apple_tv_as_you_type(qtbot, apple, atv_sent, monkeypatch):
+    monkeypatch.setattr(appletv.AppleTV, "typed", lambda self: "")
+    apple.post("keyboard", True)  # a search box opened on the box: the keyboard takes over
+    qtbot.waitUntil(apple.entry.hasFocus)
+    assert apple.keyboard.state.text() == "Text field open"
+    qtbot.keyClicks(apple.entry, "sev")
+    expect(qtbot, atv_sent, ["TEXT:sev"])  # one request for a burst of typing
+    qtbot.keyClick(apple.entry, Qt.Key.Key_Backspace)
+    expect(qtbot, atv_sent, ["TEXT:sev", "TEXT:se"])
+    qtbot.keyClick(apple.entry, Qt.Key.Key_Return)  # back to the remote keys; nothing more to send
+    assert not apple.entry.hasFocus()
+    qtbot.keyClick(apple, Qt.Key.Key_Up)
+    expect(qtbot, atv_sent, ["TEXT:sev", "TEXT:se", "KEY_UP"])
+
+
+def test_an_opening_field_shows_its_text_and_closing_gives_the_keys_back(qtbot, apple, atv_sent, monkeypatch):
+    monkeypatch.setattr(appletv.AppleTV, "typed", lambda self: "the night")
+    apple.post("keyboard", True)
+    qtbot.waitUntil(lambda: apple.entry.text() == "the night")
+    apple.post("keyboard", False)
+    qtbot.waitUntil(lambda: apple.keyboard.state.text() == "No text field open")
+    assert apple.entry.text() == "" and not apple.entry.hasFocus()
+    expect(qtbot, atv_sent, [])
+
+
+def test_clearing_the_keyboard_clears_the_tv_field(qtbot, apple, atv_sent, monkeypatch):
+    monkeypatch.setattr(appletv.AppleTV, "typed", lambda self: "abc")
+    apple.post("keyboard", True)
+    qtbot.waitUntil(lambda: apple.entry.text() == "abc")
+    next(b for b in apple.findChildren(QToolButton) if b.accessibleName() == "Clear the Apple TV's text field").click()
+    expect(qtbot, atv_sent, ["TEXT:"])
+    assert apple.entry.text() == ""
 
 
 def test_apple_text(qtbot, apple, atv_sent):
@@ -2038,8 +2088,8 @@ def test_apple_edit_apps_has_no_add_or_remove(qtbot, apple):
 
 def test_airplay_cast_is_off_without_the_pyatv_fix(apple, monkeypatch):
     def cast_button():
-        row = apple._airplay_row()
-        return row.itemAt(0).widget()
+        row = apple._apple_media_row()  # skip back · AirPlay cast · skip ahead
+        return row.itemAt(1).widget()
     assert cast_button().isEnabled()
     monkeypatch.setattr(appletv, "can_cast", lambda: False)
     b = cast_button()

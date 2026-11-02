@@ -43,6 +43,8 @@ def main():
     appletv.AppleTV.power_state = lambda self: "on"
     appletv.AppleTV.connect = lambda self: self.on_event("connected", None)
     appletv.AppleTV.scan_apps = lambda self: self.cfg["apps"]
+    appletv.AppleTV.typed = lambda self: "the night sky"
+    appletv.can_cast = lambda: True  # shown as with tools/pyatv-airplay.patch applied
 
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication, QFrame
@@ -84,12 +86,15 @@ def main():
         apple.show()
         holder.append(apple)
         apple.post("now_playing", NOW_PLAYING)
+        apple.post("keyboard", True)  # a search box open on the TV, with something typed
         QTimer.singleShot(1500, shoot_apple)
 
     def shoot_apple():
         body = holder[0].findChild(QFrame, "body")
         assert body is not None
-        save(body.grab(), docs / "remote-appletv.png")
+        pair = body.parentWidget()  # the Siri Remote and the panel beside it
+        assert pair is not None
+        save(pair.grab(), docs / "remote-appletv.png")
         app.quit()
 
     holder = []

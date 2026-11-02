@@ -213,9 +213,15 @@ def playing_info(playing, app_name=None):
 def make_listener(owner):
     """The object pyatv reports to (on the loop thread): connection, now playing and power changes.
     pyatv keeps only weak references to it, so the AppleTV holds it."""
-    from pyatv.interface import DeviceListener, PowerListener, PushListener
+    from pyatv.const import KeyboardFocusState
+    from pyatv.interface import (
+        DeviceListener,
+        KeyboardListener,
+        PowerListener,
+        PushListener,
+    )
 
-    class Listener(DeviceListener, PushListener, PowerListener):
+    class Listener(DeviceListener, PushListener, PowerListener, KeyboardListener):
         def connection_lost(self, exception):
             owner._lost()
 
@@ -230,6 +236,9 @@ def make_listener(owner):
 
         def powerstate_update(self, old_state, new_state):
             owner.on_event("power", new_state.name.lower())
+
+        def focusstate_update(self, old_state, new_state):  # a text field opened or closed on the box
+            owner.on_event("keyboard", new_state == KeyboardFocusState.Focused)
 
     return Listener()
 
@@ -276,7 +285,7 @@ class AppleTV:
             if self.atv is not None:
                 return self.atv
             pyatv = _pyatv()
-            from pyatv.const import Protocol
+            from pyatv.const import KeyboardFocusState, Protocol
 
             conf = await self._find()
             creds = self.cfg["credentials"]
@@ -291,6 +300,8 @@ class AppleTV:
             self._listener = self._listener or make_listener(self)
             atv.listener = self._listener
             atv.power.listener = self._listener
+            with contextlib.suppress(Exception):  # typing still works without the open/close reports
+                atv.keyboard.listener = self._listener
             self.push_error = None
             try:
                 atv.push_updater.listener = self._listener
@@ -302,6 +313,8 @@ class AppleTV:
             self.atv = atv
             self._remember(str(conf.address), conf.name)
             self.on_event("connected", None)
+            with contextlib.suppress(Exception):  # a text field already open when the remote connects
+                self.on_event("keyboard", atv.keyboard.text_focus_state == KeyboardFocusState.Focused)
             return atv
 
     async def stream(self, url):
@@ -375,8 +388,14 @@ class AppleTV:
         async def go(atv):
             if atv.keyboard.text_focus_state != KeyboardFocusState.Focused:
                 raise RuntimeError("No text field is open on the Apple TV; open a search box first")
-            await atv.keyboard.text_set(s)
+            await (atv.keyboard.text_set(s) if s else atv.keyboard.text_clear())
         self.loop.run(self._do(go))
+
+    def typed(self):
+        """What the open tvOS text field holds ("" if none is open)."""
+        async def go(atv):
+            return await atv.keyboard.text_get() or ""
+        return self.loop.run(self._do(go))
 
     def info(self, host=None):
         async def go(atv):
