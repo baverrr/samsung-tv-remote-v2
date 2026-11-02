@@ -2281,16 +2281,7 @@ def raise_existing(msg):
     # Our launch's activation token lets the running window take focus on Wayland.
     token = os.environ.get("XDG_ACTIVATION_TOKEN", "").encode()
     if core.WINDOWS:
-        from multiprocessing import AuthenticationError
-        from multiprocessing.connection import Client
-        try:
-            with Client(INSTANCE_PIPE, family="AF_PIPE", authkey=instance_key()) as conn:
-                conn.send_bytes(msg + b"\n" + token)
-            return True
-        except AuthenticationError:
-            raise InstanceError("Another user's program is holding the remote's instance pipe.") from None
-        except (OSError, EOFError):
-            return False
+        return raise_existing_pipe(msg + b"\n" + token)
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.connect(INSTANCE_SOCKET)
@@ -2300,6 +2291,34 @@ def raise_existing(msg):
         return True
     except OSError:
         return False
+
+
+def raise_existing_pipe(data, timeout=3):
+    """Windows: send data to the running remote over the instance pipe; True if one took it. Connecting
+    succeeds as soon as the pipe exists, but the key check needs the other end to answer, so a holder
+    that never does (one stuck starting, or not a remote at all) must not hang this launch."""
+    from multiprocessing import AuthenticationError
+    from multiprocessing.connection import Client
+
+    result = {}
+
+    def go():
+        try:
+            with Client(INSTANCE_PIPE, family="AF_PIPE", authkey=instance_key()) as conn:
+                conn.send_bytes(data)
+            result["sent"] = True
+        except AuthenticationError:
+            result["refused"] = True
+        except (OSError, EOFError):
+            result["sent"] = False
+    t = threading.Thread(target=go, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise InstanceError(f"Another {core.APP_NAME} seems to be starting but doesn't answer; try again in a moment.")
+    if result.get("refused"):
+        raise InstanceError("Another user's program is holding the remote's instance pipe.")
+    return bool(result.get("sent"))
 
 
 class InstanceError(RuntimeError):

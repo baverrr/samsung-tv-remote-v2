@@ -42,6 +42,7 @@ jobs:
 
   test-windows:
     runs-on: windows-latest
+    timeout-minutes: 20  # a hung test fails the job instead of holding it for six hours
     strategy:
       fail-fast: false
       matrix:
@@ -53,8 +54,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install websocket-client "pyatv==0.18.0" "srptools==1.0.1" "patch-ng==1.18.1" PySide6-Essentials pytest pytest-qt
-      - run: python -I -m pytest -q
+      - run: pip install websocket-client "pyatv==0.18.0" "srptools==1.0.1" "patch-ng==1.18.1" PySide6-Essentials pytest pytest-qt pytest-timeout
+      # A test stuck for 2 minutes fails with every thread's traceback, so a hang names itself.
+      - run: python -I -m pytest -q --timeout=120
 
   # install.ps1 end to end on a Windows runner: everything it sets up, and a second run that changes nothing.
   install-windows:

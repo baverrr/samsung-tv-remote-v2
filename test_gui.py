@@ -1282,9 +1282,12 @@ def test_second_launch_raises_the_running_remote(instance_socket):
     running = rq.claim_instance(b"raise")
     assert running is not None
     try:
+        got = []  # the running remote listens all the time; on Windows the caller's key check needs that
+        listening = threading.Thread(target=lambda: got.append(running.next_message()), daemon=True)
+        listening.start()
         assert rq.claim_instance(b"cast") is None
-        msg = running.next_message()
-        assert msg is not None and msg.startswith(b"cast\n")
+        listening.join(5)
+        assert got and got[0] is not None and got[0].startswith(b"cast\n")
     finally:
         running.close()
 
@@ -1320,6 +1323,18 @@ def test_a_remote_held_by_another_user_is_refused(instance_socket, monkeypatch):
             rq.raise_existing(b"raise")
     finally:
         running.close()
+
+
+@WINDOWS_ONLY
+def test_a_pipe_holder_that_never_answers_doesnt_hang_a_launch(instance_socket, monkeypatch):
+    from multiprocessing.connection import Listener
+    stuck = Listener(instance_socket, family="AF_PIPE", authkey=rq.instance_key())  # never accepts
+    try:
+        monkeypatch.setattr(rq.time, "sleep", lambda s: None)
+        with pytest.raises(rq.InstanceError, match="doesn't answer"):
+            rq.claim_instance(b"raise")
+    finally:
+        stuck.close()
 
 
 @WINDOWS_ONLY
