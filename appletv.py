@@ -36,10 +36,16 @@ NATIVE = set(KEYS.values()) | {"play", "pause", "stop", "next", "previous", "hom
 DEFAULT_FAVORITES = ["com.netflix.Netflix", "com.google.ios.youtube", "com.amazon.aiv.AIVApp",
                      "com.disney.disneyplus", "com.hulu.plus"]
 BUNDLE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-SECTION_DEFAULTS = {"identifier": None, "name": None, "host": None, "credentials": {}, "apps": []}
+SECTION_DEFAULTS = {"identifier": None, "name": None, "host": None, "credentials": {}, "apps": [],
+                    "volume_via_samsung": False}
 TIMEOUT_S = 15  # one request to the box; connecting includes an mDNS scan of up to 5 s
 CAST_UNPATCHED = ("Casting to the Apple TV needs pyatv's AirPlay fix for tvOS 26 and later. Run install.sh "
                   "again: it applies tools/pyatv-airplay.patch")
+# The volume keys, and the Samsung TV keys they become with volume_via_samsung.
+VOLUME_KEYS = {"volume_up": "KEY_VOLUP", "volume_down": "KEY_VOLDOWN"}
+VOLUME_UNAVAILABLE = ("The Apple TV isn't controlling the TV's volume. On the Apple TV, set Settings › Remotes and "
+                      "Devices › Volume Control to Auto (HDMI-CEC), or choose \"Volume keys control the Samsung TV\" "
+                      "in the remote's device menu")
 NOT_SET_UP = ("No Apple TV is set up yet. Open the remote and choose Set up Apple TV…, "
               "or run: tv-remote appletv pair")
 
@@ -261,6 +267,7 @@ class AppleTV:
         self.closing = False
         self._listener = None  # make_listener(), once pyatv is imported
         self._artwork_hash = None
+        self._samsung = None  # the Samsung TV client the volume keys go to (volume_via_samsung)
         self.loop = LoopThread()
         self._connect_lock = asyncio.Lock()  # bound to self.loop.loop on first use (Python 3.10+)
 
@@ -354,6 +361,8 @@ class AppleTV:
 
     def close(self):
         self.closing = True
+        if self._samsung is not None:
+            self._samsung.close()
         atv, self.atv = self.atv, None
         if atv is not None:
             async def go():
@@ -373,7 +382,33 @@ class AppleTV:
         if key in ("KEY_POWER", "power"):
             self.turn_off()
             return
-        self.remote(resolve_key(key))
+        method = resolve_key(key)
+        if method in VOLUME_KEYS:
+            self.volume(method)
+        else:
+            self.remote(method)
+
+    def volume_via_samsung(self):
+        """Whether the volume keys go to the Samsung TV: set in the device menu, for an Apple TV whose
+        own volume control can't reach the TV (the Siri Remote set to IR, or HDMI-CEC off)."""
+        return bool(self.cfg["volume_via_samsung"]) and core.is_set_up(self.root, "samsung")
+
+    def volume(self, method):
+        """volume_up or volume_down: on the Samsung TV if so set, else through the Apple TV, which says
+        plainly when it isn't controlling the TV's volume (tvOS takes the key and does nothing then)."""
+        if self.volume_via_samsung():
+            if self._samsung is None:
+                self._samsung = core.TV(self.root)
+            self._samsung.key(VOLUME_KEYS[method])
+            return
+
+        async def go(atv):
+            from pyatv.const import FeatureName, FeatureState
+            feature = FeatureName.VolumeUp if method == "volume_up" else FeatureName.VolumeDown
+            if atv.features.get_feature(feature).state != FeatureState.Available:
+                raise RuntimeError(VOLUME_UNAVAILABLE)
+            await getattr(atv.remote_control, method)()
+        self.loop.run(self._do(go))
 
     def remote(self, method):
         """A pyatv RemoteControl call: select, play, pause, stop..."""

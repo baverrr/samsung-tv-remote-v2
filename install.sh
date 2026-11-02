@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs TV Remote for the current user: a venv, the tv-remote launcher, the menu entry and
+# Installs Samsung & Apple TV Remote for the current user: a venv, the tv-remote launcher, the menu entry and
 # tvremote:// links, the icon, (with --audio) the service that sends sound to the TV while mirroring,
 # and (with --bridge) the HTTP bridge that ESP32 and other network remotes send their keys to.
 # Run it from the checkout, wherever it lives; run it again after moving the checkout.
@@ -93,4 +93,4 @@ case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *) echo "Note: $BIN_DIR isn't on your PATH; the menu entry works anyway." ;;
 esac
-echo "Done. Set your TV's address in ~/.config/tv-remote/config.json (see README), then open TV Remote."
+echo "Done. Set your TV's address in ~/.config/tv-remote/config.json (see README), then open Samsung & Apple TV Remote."

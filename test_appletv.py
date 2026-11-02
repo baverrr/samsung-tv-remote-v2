@@ -6,6 +6,7 @@ event loop thread, key table, app lists, pairing flow and AirPlay renderer run f
 import asyncio
 import http.client
 import json
+import os
 import socket
 import threading
 import time
@@ -14,7 +15,7 @@ from typing import Any
 
 import pytest
 from pyatv import exceptions as pyatv_errors
-from pyatv.const import DeviceState, KeyboardFocusState, PowerState
+from pyatv.const import DeviceState, FeatureState, KeyboardFocusState, PowerState
 
 import appletv
 import bridge
@@ -63,6 +64,8 @@ class FakeBox:
         self.stream = SimpleNamespace(play_url=self.play_url)
         self.metadata = SimpleNamespace(artwork=self.artwork, app=SimpleNamespace(name="TV"), playing=self.playing)
         self.device_info = SimpleNamespace(model_str="Apple TV 4K (gen 3)", version="27.2")
+        self.volume_state = FeatureState.Available  # Unavailable: the box isn't controlling the TV's volume
+        self.features = SimpleNamespace(get_feature=lambda name: SimpleNamespace(state=self.volume_state))
         self.now = None
         self.played = None
         self.artwork_calls = 0
@@ -263,7 +266,10 @@ def test_now_playing_is_reported_with_artwork_once_per_item(client, box, events)
                                                                     episode_number=3, title="Who Is Alive?",
                                                                     state=DeviceState.Paused))
     deadline = time.time() + 3
-    while not any(e == "artwork" for e, _ in events) and time.time() < deadline:
+    # Both updates and the artwork: the two updates are queued from this thread, so the artwork
+    # (fetched after the first) can arrive before the second update.
+    while time.time() < deadline and not (any(e == "artwork" for e, _ in events)
+                                          and sum(e == "now_playing" for e, _ in events) >= 2):
         threading.Event().wait(0.01)  # time.sleep is stubbed out
     infos = [d for e, d in events if e == "now_playing"]
     assert infos[0]["subtitle"] == "Severance · S2 E3" and infos[0]["state"] == "playing"
@@ -488,7 +494,8 @@ def test_pairing_saves_both_credentials_and_switches_to_the_apple_tv(monkeypatch
     assert saved["device"] == "appletv" and saved["host"] == HOST  # the Samsung settings stay
     assert saved["appletv"]["identifier"] == "NEW-ID" and saved["appletv"]["name"] == "Living Room"
     assert saved["appletv"]["credentials"] == {"companion": "new-creds", "airplay": "new-creds"}
-    assert (config.stat().st_mode & 0o777) == 0o600
+    if os.name != "nt":  # Windows has no such modes: the user profile keeps %APPDATA% private
+        assert (config.stat().st_mode & 0o777) == 0o600
 
 
 def test_pairing_another_box_drops_the_old_boxs_credentials(monkeypatch, config):
@@ -952,3 +959,43 @@ def test_a_text_field_opening_or_closing_is_reported(live, wired, box, events):
     assert events[-1] == ("keyboard", False)
     live._listener.focusstate_update(KeyboardFocusState.Unfocused, KeyboardFocusState.Focused)
     assert events[-1] == ("keyboard", True)
+
+
+# -- volume
+
+
+def test_volume_goes_through_the_apple_tv_when_it_controls_the_tv(client, box):
+    client.key("KEY_VOLUP")
+    client.key("volume_down")
+    assert box.log == ["volume_up", "volume_down"]
+
+
+def test_volume_says_why_when_the_apple_tv_cannot_change_it(client, box):
+    box.volume_state = FeatureState.Unavailable  # Volume Control set to IR, or HDMI-CEC off
+    with pytest.raises(RuntimeError, match="Volume Control to Auto"):
+        client.key("KEY_VOLUP")
+    assert box.log == []
+
+
+def test_volume_can_go_to_the_samsung_tv(client, box, monkeypatch):
+    sent = []
+    monkeypatch.setattr(core.TV, "key", lambda self, k: sent.append(k))
+    client.cfg["volume_via_samsung"] = True
+    client.key("KEY_VOLUP")
+    client.key("volume_down")
+    client.key("KEY_ENTER")  # only volume goes there
+    assert sent == ["KEY_VOLUP", "KEY_VOLDOWN"] and box.log == ["select"]
+
+
+def test_volume_stays_on_the_apple_tv_without_a_samsung_tv(client, box, monkeypatch):
+    monkeypatch.setattr(core, "is_set_up", lambda cfg, device: device == "appletv")
+    client.cfg["volume_via_samsung"] = True
+    client.key("KEY_VOLUP")
+    assert box.log == ["volume_up"]
+
+
+def test_the_volume_setting_survives_a_broken_value(config):
+    cfg = json.loads(config.read_text())
+    cfg["appletv"]["volume_via_samsung"] = "yes"
+    config.write_text(json.dumps(cfg))
+    assert appletv.section(core.load_config())["volume_via_samsung"] is False

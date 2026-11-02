@@ -24,12 +24,13 @@ import sys
 import threading
 import urllib.error
 import urllib.parse
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import cast
 
 import websocket
 
 import tv_remote as core
+from cast import ExclusiveHTTPServer
 
 PORT = 8198  # next to the cast server's 8199
 KEY_RE = re.compile(r"[A-Za-z0-9_]{1,40}")
@@ -58,7 +59,7 @@ class HTTPError(Exception):
         self.status = status
 
 
-class Bridge(ThreadingHTTPServer):
+class Bridge(ExclusiveHTTPServer):
     daemon_threads = True
 
     def __init__(self, tv, address):

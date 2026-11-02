@@ -37,5 +37,56 @@ jobs:
       - name: Install Qt's system libraries
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
       # On the desktop PySide6 comes from apt; here the PyPI wheels stand in (Essentials has QtSvg and QtTest).
-      - run: pip install websocket-client "pyatv==0.18.0" "srptools==1.0.1" PySide6-Essentials pytest pytest-qt
+      - run: pip install websocket-client "pyatv==0.18.0" "srptools==1.0.1" "patch-ng==1.18.1" PySide6-Essentials pytest pytest-qt
       - run: python -I -m pytest -q
+
+  test-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20  # a hung test fails the job instead of holding it for six hours
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.14"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install websocket-client "pyatv==0.18.0" "srptools==1.0.1" "patch-ng==1.18.1" PySide6-Essentials pytest pytest-qt pytest-timeout
+      # A test stuck for 2 minutes fails with every thread's traceback, so a hang names itself.
+      - run: python -I -m pytest -q --timeout=120
+
+  # install.ps1 end to end on a Windows runner: everything it sets up, and a second run that changes nothing.
+  install-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Install
+        shell: powershell  # Windows PowerShell 5.1, what a fresh Windows has
+        run: .\install.ps1 -Bridge
+      - name: Check what it set up
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'Samsung & Apple TV Remote.lnk'
+          if (-not (Test-Path $lnk)) { throw "no Start menu shortcut at $lnk" }
+          $cmd = (Get-Item 'HKCU:\Software\Classes\tvremote\shell\open\command').GetValue('')
+          if ($cmd -notlike '*pythonw.exe*tv_remote.py*%1*') { throw "tvremote:// opens: $cmd" }
+          if (-not (Get-ScheduledTask -TaskName 'Samsung & Apple TV Remote bridge')) { throw 'no bridge task' }
+          $bin = Join-Path $env:LOCALAPPDATA 'Programs\tv-remote\bin'
+          $ErrorActionPreference = 'Continue'  # its usage goes to stderr, which 'Stop' would turn into an error
+          & "$bin\tv-remote.cmd" help 2>&1 | Out-Null  # not a command: the usage, exit 1 (no window)
+          $ErrorActionPreference = 'Stop'
+          if ($LASTEXITCODE -ne 1) { throw "tv-remote.cmd exited $LASTEXITCODE" }
+          & .\venv\Scripts\python.exe -I -c "import sys; sys.path.insert(0, '.'); import appletv; assert appletv.can_cast(), 'pyatv not patched'"
+          if ($LASTEXITCODE) { throw 'pyatv is not patched' }
+      - name: Run it again
+        shell: powershell
+        run: |
+          $out = .\install.ps1 -Bridge | Out-String
+          if ($out -match 'patched for AirPlay') { throw "patched twice: $out" }

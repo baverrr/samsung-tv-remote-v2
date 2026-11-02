@@ -1,8 +1,8 @@
 # Terms and Conditions
 
-**Samsung TV Remote** · Effective 1 November 2026
+**Samsung & Apple TV Remote** · Effective 1 November 2026
 
-These terms apply to your use of Samsung TV Remote ("the app"), its source code and its
+These terms apply to your use of Samsung & Apple TV Remote ("the app"), its source code and its
 documentation. By downloading, installing or using the app, you agree to them. If you don't
 agree, don't use the app.
 
@@ -36,7 +36,8 @@ or all features from working.
 
 The app uses other software that is covered by its own licenses and terms, including Qt for
 Python (PySide6), websocket-client, pyatv (MIT License; `tools/pyatv-airplay.patch` holds changes from
-pyatv pull request #2846 under that license), biplist, ffmpeg, GNOME Network Displays and the Lucide icons
+pyatv pull request #2846 under that license), biplist, patch-ng (MIT License; Windows installs only),
+ffmpeg, GNOME Network Displays and the Lucide icons
 (ISC License, see `icons/LICENSE-lucide`). Those terms apply to those components.
 
 ## 5. No warranty

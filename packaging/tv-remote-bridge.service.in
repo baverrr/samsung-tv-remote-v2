@@ -1,5 +1,5 @@
 [Unit]
-Description=TV Remote HTTP bridge for ESP32 and other network remotes (tv-remote serve)
+Description=Samsung & Apple TV Remote HTTP bridge for ESP32 and other network remotes (tv-remote serve)
 After=network-online.target
 Wants=network-online.target
 

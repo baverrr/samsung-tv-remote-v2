@@ -1,8 +1,8 @@
 # Privacy Policy
 
-**Samsung TV Remote** · Effective 31 October 2026
+**Samsung & Apple TV Remote** · Effective 31 October 2026
 
-Samsung TV Remote ("the app") is a desktop program that runs entirely on your own computer
+Samsung & Apple TV Remote ("the app") is a desktop program that runs entirely on your own computer
 and talks only to the Samsung TV and Apple TV, and to remotes you set up yourself, on your local network.
 It has no accounts, no online servers, no analytics and no advertising. The author never receives any information about you or your use
 of the app.
@@ -15,14 +15,16 @@ reporting or update check.
 ## What stays on your computer
 
 The app keeps a few files in your home folder so that it works the next time you start it.
-They're readable only by your user account:
+They're readable only by your user account (on Windows they're in `%APPDATA%\tv-remote`, which
+only your Windows account can open):
 
 | File | What's in it |
 |---|---|
 | `~/.config/tv-remote/config.json` | Your TV's network address and MAC address, the name the app pairs as, the **pairing token** the TV issued, your app-button choices and the list of apps found on the TV, and, if you use the ESP32 bridge, its **bridge token** and the addresses allowed to use it. If you pair an Apple TV, also its name, identifier and last network address, the **pairing credentials** for its Companion and AirPlay protocols, and its app list and your app buttons. |
 | `~/.config/tv-remote/mirror-audio.json` | The apps and sound roles that should stay on your own speakers or headset while mirroring (e.g. Discord, Zoom). |
 | `~/.local/state/tv-mirror-audio.json` | Which sound output to switch back to when mirroring stops. |
-| A temporary folder (`/tmp/tv-cast-*`) | JPEG copies of photos converted for casting. It's deleted when you stop casting or close the app. |
+| `%APPDATA%\tv-remote\instance.key` (Windows only) | A random key that lets a second launch of the remote bring the open window forward, and keeps other users' programs from doing so. |
+| A temporary folder (`/tmp/tv-cast-*`, on Windows in `%TEMP%`) | JPEG copies of photos converted for casting. It's deleted when you stop casting or close the app. |
 
 To remove all of it, delete those files (and the app). Unpairing on the TV itself is under the
 TV's own device-connection settings.

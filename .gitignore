@@ -8,3 +8,5 @@ __pycache__/
 gate-result*.json
 # Old Tk version, kept on disk for reference (git history replaces .bak copies from now on)
 *.bak-tk
+# Made by install.ps1 from tv-remote.svg
+tv-remote.ico

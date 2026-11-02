@@ -8,10 +8,14 @@ Icons are Lucide (ISC, icons/LICENSE-lucide), recoloured at load time (QSS image
 Sizes follow the system font (KDE's font setting), so a larger font makes the whole remote larger.
 """
 
+import contextlib
 import functools
+import getpass
 import math
 import os
 import queue
+import re
+import secrets
 import socket
 import struct
 import threading
@@ -29,6 +33,7 @@ from PySide6.QtCore import (
     QRectF,
     QSettings,
     QSize,
+    QStandardPaths,
     Qt,
     QTimer,
     QVariantAnimation,
@@ -76,7 +81,9 @@ import cast
 import tv_remote as core  # the launcher runs tv_remote.py as __main__; this imports it again as a module
 
 HERE = Path(__file__).resolve().parent
-INSTANCE_SOCKET = f"\0tv-remote-{os.getuid()}"  # abstract unix socket: one remote window per user
+# One remote window per user: an abstract unix socket, or on Windows a named pipe (see claim_instance).
+INSTANCE_SOCKET = "" if core.WINDOWS else f"\0tv-remote-{os.getuid()}"
+INSTANCE_PIPE = rf"\\.\pipe\tv-remote-{re.sub(r'[^A-Za-z0-9_.-]', '_', getpass.getuser())}"
 ICONS = HERE / "icons"
 
 # Design tokens: dark, like a physical remote. Text (fg, muted) meets 4.5:1 on every surface; edge and the
@@ -232,8 +239,9 @@ def stylesheet():
     # Three steps of a modular scale (major third, 1.25), with captions held at 0.9× (9 pt ≈ 12 px at the
     # 10 pt design size, 96 DPI).
     subs = {**T, "fs_caption": f"{base * 0.9:.1f}pt", "fs_body": f"{base:.1f}pt", "fs_heading": f"{base * 1.25:.1f}pt",
-            "check": str(ICONS / "check-white.svg"), "chev_up": str(ICONS / "chevron-up-muted.svg"),
-            "chev_down": str(ICONS / "chevron-down-muted.svg")}
+            # Forward slashes: QSS reads a backslash in url() as an escape, so Windows paths would break.
+            "check": (ICONS / "check-white.svg").as_posix(), "chev_up": (ICONS / "chevron-up-muted.svg").as_posix(),
+            "chev_down": (ICONS / "chevron-down-muted.svg").as_posix()}
     css = QSS
     for name in sorted(subs, key=len, reverse=True):  # @accent_fill before @accent
         css = css.replace("@" + name, subs[name])
@@ -256,7 +264,7 @@ def palette():
 
 
 def svg_renderer(name, colour):
-    data = (ICONS / f"{name}.svg").read_text().replace("currentColor", colour)
+    data = (ICONS / f"{name}.svg").read_text(encoding="utf-8").replace("currentColor", colour)
     return QSvgRenderer(QByteArray(data.encode()))
 
 
@@ -869,7 +877,7 @@ class RemoteWindow(QWidget):
         self.setObjectName("window")
         self.device = device or core.pick_device(cfg)
         self.apple = self.device == "appletv"
-        self.setWindowTitle("Apple TV Remote" if self.apple else "TV Remote")
+        self.setWindowTitle("Apple TV Remote" if self.apple else "Samsung TV Remote")
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)  # clicking the background leaves the text box
         self.root = cfg  # the whole config; self.cfg is this device's part of it (the same dict for Samsung)
         self.turned_off = False  # set once the TV confirmed it went off, until it connects again
@@ -1051,10 +1059,26 @@ class RemoteWindow(QWidget):
             act.setChecked(device == self.device)
             act.setEnabled(device in ready)
         menu.addSeparator()
+        if self.apple and "samsung" in ready:  # the Apple TV is often plugged into the Samsung TV
+            act = menu.addAction("Volume keys control the Samsung TV", self.toggle_volume_via_samsung)
+            act.setCheckable(True)
+            act.setChecked(bool(self.cfg["volume_via_samsung"]))
+            act.setToolTip("For an Apple TV that can't change the TV's volume itself (its Volume Control set to "
+                           "IR, or HDMI-CEC off): volume goes to the Samsung TV instead")
         menu.addAction("Pair Apple TV again…" if "appletv" in ready else "Set up Apple TV…", self.set_up_apple_tv)
         if "samsung" not in ready:
             menu.addAction("Set up Samsung TV…", lambda: QMessageBox.information(
                 self, "Set up Samsung TV", core.SAMSUNG_NOT_SET_UP))
+
+    def toggle_volume_via_samsung(self):
+        self.cfg["volume_via_samsung"] = not self.cfg["volume_via_samsung"]
+        try:
+            core.save_config(self.root)
+        except OSError as e:
+            self.set_status(f"Couldn't save the setting: {core.describe_error(e)}", "danger")
+            return
+        self.set_status("Volume keys control the Samsung TV" if self.cfg["volume_via_samsung"] else
+                        "Volume keys go to the Apple TV")
 
     def set_up_apple_tv(self):
         dialog = AppleSetupDialog(self, self.root)
@@ -1320,7 +1344,7 @@ class RemoteWindow(QWidget):
 
     def mirror(self):
         core.start_mirroring()
-        self.post("status", "Pick the TV in Network Displays, then Allow on the TV")
+        self.post("status", core.MIRROR_HINT)
 
     def send_text(self):
         if self.keyboard:  # typed live: only what's waiting for the typing pause is left to send
@@ -2100,11 +2124,12 @@ class CastWindow(QWidget):
             folder = QFileDialog.getExistingDirectory(self, "Cast a folder to the TV", str(Path.home()))
             paths = [folder] if folder else []
         else:
-            name, start = {"image": ("Photos", "Pictures"), "video": ("Videos", "Videos"),
-                           "audio": ("Music", "Music")}[kind]
+            loc = QStandardPaths.StandardLocation
+            name, where = {"image": ("Photos", loc.PicturesLocation), "video": ("Videos", loc.MoviesLocation),
+                           "audio": ("Music", loc.MusicLocation)}[kind]
             # "x" + e: kind_of uses Path.suffix, and Path(".mp4").suffix is "" (a dotfile).
             exts = [e for e in [*cast.MIME, *cast.CONVERT_TO_JPEG] if cast.kind_of("x" + e) == kind]
-            start = Path.home() / start
+            start = Path(QStandardPaths.writableLocation(where) or Path.home())  # follows OneDrive on Windows
             paths, _ = QFileDialog.getOpenFileNames(
                 self, f"Cast {name.lower()} to the TV", str(start if start.is_dir() else Path.home()),
                 f"{name} ({' '.join('*' + e for e in exts)})")
@@ -2191,19 +2216,110 @@ def same_user(conn):
     return struct.unpack("3i", creds)[1] == os.getuid()
 
 
+def instance_key():
+    """Windows: the secret both ends of the instance pipe prove they hold. It lives in the user's own
+    %APPDATA%, so only this user's programs can read it, and so talk to (or pose as) the remote."""
+    path = core.config_dir() / "instance.key"
+    try:
+        key = path.read_bytes()
+        if len(key) >= 32:
+            return key
+    except OSError:
+        pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    key = secrets.token_bytes(32)
+    path.write_bytes(key)
+    return key
+
+
+class Instance:
+    """The running remote's end of the single-instance channel: next_message() waits for a launch's
+    b"raise\n<token>" or b"cast\n<token>" (None once closed)."""
+
+    def __init__(self, listener):
+        self.listener = listener
+        self.closed = False
+
+    def next_message(self):
+        while not self.closed:
+            if core.WINDOWS:
+                from multiprocessing import AuthenticationError
+                try:
+                    conn = self.listener.accept()
+                except (OSError, EOFError, AuthenticationError):  # closed, or a caller without the key
+                    if not self.closed:
+                        time.sleep(0.05)  # never a busy loop, whatever accept() keeps failing on
+                    continue
+                with conn:
+                    try:
+                        return conn.recv_bytes(4096)
+                    except (OSError, EOFError):
+                        return b"raise"
+            try:
+                conn, _ = self.listener.accept()
+            except OSError:  # listener shut down: the window has closed
+                return None
+            with conn:
+                if not same_user(conn):
+                    continue
+                conn.settimeout(1)
+                try:
+                    return conn.recv(4096)
+                except OSError:
+                    return b"raise"
+        return None
+
+    def close(self):
+        self.closed = True
+        if not core.WINDOWS:
+            with contextlib.suppress(OSError):
+                self.listener.shutdown(socket.SHUT_RDWR)
+        self.listener.close()
+
+
 def raise_existing(msg):
     """True if a remote is already running (it was sent msg: b'raise' or b'cast')."""
     # Our launch's activation token lets the running window take focus on Wayland.
     token = os.environ.get("XDG_ACTIVATION_TOKEN", "").encode()
+    if core.WINDOWS:
+        return raise_existing_pipe(msg + b"\n" + token)
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.connect(INSTANCE_SOCKET)
             if not same_user(s):
-                raise InstanceError("Another user's program is holding the TV Remote's instance socket.")
+                raise InstanceError("Another user's program is holding the remote's instance socket.")
             s.sendall(msg + b"\n" + token)
         return True
     except OSError:
         return False
+
+
+def raise_existing_pipe(data, timeout=3):
+    """Windows: send data to the running remote over the instance pipe; True if one took it. Connecting
+    succeeds as soon as the pipe exists, but the key check needs the other end to answer, so a holder
+    that never does (one stuck starting, or not a remote at all) must not hang this launch."""
+    from multiprocessing import AuthenticationError
+    from multiprocessing.connection import Client
+
+    result = {}
+
+    def go():
+        try:
+            with Client(INSTANCE_PIPE, family="AF_PIPE", authkey=instance_key()) as conn:
+                conn.send_bytes(data)
+            result["sent"] = True
+        except AuthenticationError:
+            result["refused"] = True
+        except (OSError, EOFError):
+            result["sent"] = False
+    t = threading.Thread(target=go, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise InstanceError(f"Another {core.APP_NAME} seems to be starting but doesn't answer; try again in a moment.")
+    if result.get("refused"):
+        raise InstanceError("Another user's program is holding the remote's instance pipe.")
+    return bool(result.get("sent"))
 
 
 class InstanceError(RuntimeError):
@@ -2211,14 +2327,21 @@ class InstanceError(RuntimeError):
 
 
 def claim_instance(msg):
-    """The single-instance listener for this new remote, or None if one is already running (it was sent
-    msg). Two launches at the same moment can both find no remote; the one that loses the bind asks
-    the winner instead, once it's listening."""
+    """The single-instance listener (an Instance) for this new remote, or None if one is already running
+    (it was sent msg). Two launches at the same moment can both find no remote; the one that loses the
+    bind asks the winner instead, once it's listening. On Windows the pipe's first instance is exclusive
+    (FILE_FLAG_FIRST_PIPE_INSTANCE), which plays the part of the bind."""
     for attempt in range(3):
         if attempt:
             time.sleep(0.2)
         if raise_existing(msg):
             return None
+        if core.WINDOWS:
+            from multiprocessing.connection import Listener
+            try:
+                return Instance(Listener(INSTANCE_PIPE, family="AF_PIPE", authkey=instance_key()))
+            except OSError:
+                continue
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             listener.bind(INSTANCE_SOCKET)
@@ -2226,13 +2349,13 @@ def claim_instance(msg):
             listener.close()
             continue
         listener.listen()
-        return listener
-    raise InstanceError("Another TV Remote seems to be starting but doesn't answer; try again in a moment.")
+        return Instance(listener)
+    raise InstanceError(f"Another {core.APP_NAME} seems to be starting but doesn't answer; try again in a moment.")
 
 
 def first_device(cfg, why):
     """No device is set up: say how, and offer to set up an Apple TV here. The device, or None to quit."""
-    box = QMessageBox(QMessageBox.Icon.Information, "TV Remote", why, QMessageBox.StandardButton.Close)
+    box = QMessageBox(QMessageBox.Icon.Information, core.APP_NAME, why, QMessageBox.StandardButton.Close)
     setup = box.addButton("Set up Apple TV…", QMessageBox.ButtonRole.AcceptRole)
     box.exec()
     if box.clickedButton() is setup and AppleSetupDialog(None, cfg).exec() == QDialog.DialogCode.Accepted:
@@ -2254,8 +2377,11 @@ def run(cast_window=False):
     if listener is None:
         return
 
+    if core.WINDOWS:  # the taskbar shows the remote's icon, not Python's, and groups its windows
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("tvremote")  # pyright: ignore[reportAttributeAccessIssue]
     app = QApplication([])
-    app.setApplicationName("TV Remote")
+    app.setApplicationName(core.APP_NAME)
     app.setDesktopFileName("tv-remote")  # Wayland app_id: KDE matches it to tv-remote.desktop
     app.setWindowIcon(QIcon.fromTheme("tvremote", QIcon(str(HERE / "tv-remote.svg"))))
     app.setPalette(palette())
@@ -2294,19 +2420,7 @@ def run(cast_window=False):
     open_window(device, cast_window)
 
     def accept_raises():
-        while True:
-            try:
-                conn, _ = listener.accept()
-            except OSError:  # listener shut down: the window has closed
-                return
-            with conn:
-                if not same_user(conn):
-                    continue
-                conn.settimeout(1)
-                try:
-                    msg = conn.recv(4096)
-                except OSError:
-                    msg = b"raise"
+        while (msg := listener.next_message()) is not None:
             cmd, _, token = msg.partition(b"\n")
             current["window"].post("raise", (cmd.decode(errors="replace"), token.decode(errors="replace")))
 
@@ -2314,6 +2428,5 @@ def run(cast_window=False):
     app.exec()
     # Stop answering raise_existing() first: the cleanup below can wait on TV timeouts, and a relaunch
     # meanwhile must start a new window, not "raise" this closed one.
-    listener.shutdown(socket.SHUT_RDWR)
     listener.close()
     shut_down(current["window"])  # the file server is going away with this process

@@ -5,12 +5,14 @@ The TV is stubbed, so nothing is sent over the network, and the config is a temp
 Run:  ~/.local/share/tv-remote/venv/bin/python -I -m pytest -q ~/.local/share/tv-remote/test_gui.py
 """
 
+import contextlib
 import http.client
 import io
 import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 from pathlib import Path
@@ -299,6 +301,7 @@ def test_f11_toggles_full_screen(qtbot, remote):
     qtbot.waitUntil(lambda: not remote.isFullScreen())
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows' offscreen platform doesn't resize a full-screen window")
 def test_cast_window_full_screen_keeps_its_size(qtbot, remote):
     from PySide6.QtWidgets import QFrame
     remote.open_cast()
@@ -929,6 +932,11 @@ def test_cli_reports_a_refused_pairing_as_refused(monkeypatch):
         core.cli(["key", "mute"])
 
 
+POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="file modes and unix sockets are POSIX-only")
+WINDOWS_ONLY = pytest.mark.skipif(os.name != "nt", reason="named pipes are Windows-only")
+
+
+@POSIX_ONLY
 def test_config_with_the_token_is_never_readable_by_others(config, monkeypatch):
     tmp = config.with_suffix(".tmp")
     tmp.write_text("{}")  # a leftover from a crash, created with the umask (0644)
@@ -1153,7 +1161,8 @@ def test_photo_conversion_errors_are_readable(media_server, tmp_path, monkeypatc
     def missing(*args, **kwargs):
         raise FileNotFoundError("ffmpeg")
     monkeypatch.setattr(cast.subprocess, "run", missing)
-    with pytest.raises(RuntimeError, match=r"^showing \.heic photos needs ffmpeg: sudo apt install ffmpeg$"):
+    how = "winget install ffmpeg" if os.name == "nt" else "sudo apt install ffmpeg"
+    with pytest.raises(RuntimeError, match=rf"^showing \.heic photos needs ffmpeg: {how}$"):
         media_server.publish(photo)
 
     def fails(*args, **kwargs):
@@ -1255,6 +1264,11 @@ def test_a_token_that_cannot_be_saved_closes_the_socket(monkeypatch, no_reader):
 
 @pytest.fixture
 def instance_socket(monkeypatch):
+    """A fresh instance channel: the unix socket name, or on Windows the pipe name."""
+    if os.name == "nt":
+        name = rf"\\.\pipe\tv-remote-test-{os.getpid()}-{time.monotonic_ns()}"
+        monkeypatch.setattr(rq, "INSTANCE_PIPE", name)
+        return name
     name = f"\0tv-remote-test-{os.getpid()}-{time.monotonic_ns()}"
     monkeypatch.setattr(rq, "INSTANCE_SOCKET", name)
     return name
@@ -1270,14 +1284,27 @@ def test_second_launch_raises_the_running_remote(instance_socket):
     running = rq.claim_instance(b"raise")
     assert running is not None
     try:
+        got = []  # the running remote listens all the time; on Windows the caller's key check needs that
+        listening = threading.Thread(target=lambda: got.append(running.next_message()), daemon=True)
+        listening.start()
         assert rq.claim_instance(b"cast") is None
-        conn, _ = running.accept()
-        with conn:
-            assert conn.recv(100).startswith(b"cast\n")
+        listening.join(5)
+        assert got and got[0] is not None and got[0].startswith(b"cast\n")
     finally:
         running.close()
 
 
+def test_a_closed_instance_stops_waiting(instance_socket):
+    running = rq.claim_instance(b"raise")
+    assert running is not None
+    running.close()
+    assert running.next_message() is None
+    again = rq.claim_instance(b"raise")  # a relaunch starts a new remote instead of raising a closed one
+    assert again is not None
+    again.close()
+
+
+@POSIX_ONLY
 def test_launch_racing_another_one_gives_a_clear_error(instance_socket, monkeypatch):
     import socket
     monkeypatch.setattr(rq.time, "sleep", lambda s: None)
@@ -1287,6 +1314,7 @@ def test_launch_racing_another_one_gives_a_clear_error(instance_socket, monkeypa
             rq.claim_instance(b"raise")
 
 
+@POSIX_ONLY
 def test_a_remote_held_by_another_user_is_refused(instance_socket, monkeypatch):
     running = rq.claim_instance(b"raise")
     assert running is not None
@@ -1297,6 +1325,42 @@ def test_a_remote_held_by_another_user_is_refused(instance_socket, monkeypatch):
             rq.raise_existing(b"raise")
     finally:
         running.close()
+
+
+@WINDOWS_ONLY
+def test_a_pipe_holder_that_never_answers_doesnt_hang_a_launch(instance_socket, monkeypatch):
+    from multiprocessing.connection import Listener
+    stuck = Listener(instance_socket, family="AF_PIPE", authkey=rq.instance_key())  # never accepts
+    try:
+        monkeypatch.setattr(rq.time, "sleep", lambda s: None)
+        with pytest.raises(rq.InstanceError, match="doesn't answer"):
+            rq.claim_instance(b"raise")
+    finally:
+        stuck.close()
+
+
+@WINDOWS_ONLY
+def test_a_pipe_held_without_our_key_is_refused(instance_socket, monkeypatch, tmp_path):
+    from multiprocessing.connection import Listener
+    squatter = Listener(instance_socket, family="AF_PIPE", authkey=b"someone else's key")
+    try:
+        threading.Thread(target=lambda: suppress_accept(squatter), daemon=True).start()
+        with pytest.raises(rq.InstanceError, match="Another user"):
+            rq.raise_existing(b"raise")
+    finally:
+        squatter.close()
+
+
+def suppress_accept(listener):
+    with contextlib.suppress(Exception):  # the caller's wrong key, or the listener closing
+        listener.accept()
+
+
+def test_the_instance_key_is_made_once_and_kept(config, monkeypatch):
+    monkeypatch.setattr(core, "config_dir", lambda: config.parent)
+    key = rq.instance_key()
+    assert len(key) == 32 and rq.instance_key() == key
+    assert (config.parent / "instance.key").read_bytes() == key
 
 
 def test_labels_never_render_html(qtbot):
@@ -2057,6 +2121,16 @@ def test_now_playing_seek(qtbot, apple, monkeypatch):
     apple.now_card.seek.setValue(1200)
     apple.now_card.seek_released()
     qtbot.waitUntil(lambda: seeks == [1200])
+
+
+def test_device_menu_can_send_apple_tv_volume_to_the_samsung_tv(qtbot, apple, config):
+    apple.fill_device_menu(apple.device_menu)
+    act = next(a for a in apple.device_menu.actions() if a.text() == "Volume keys control the Samsung TV")
+    assert act.isCheckable() and not act.isChecked()
+    act.trigger()
+    assert json.loads(config.read_text())["appletv"]["volume_via_samsung"] is True
+    apple.fill_device_menu(apple.device_menu)
+    assert next(a for a in apple.device_menu.actions() if a.text() == "Volume keys control the Samsung TV").isChecked()
 
 
 def test_device_menu_switches_and_offers_setup(qtbot, apple):
