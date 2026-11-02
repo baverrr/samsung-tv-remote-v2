@@ -1,4 +1,4 @@
-# Installs TV Remote for the current Windows user: a venv, the Start menu shortcut, tvremote:// links,
+# Installs Samsung & Apple TV Remote for the current Windows user: a venv, the Start menu shortcut, tvremote:// links,
 # the tv-remote command and (with -Bridge) the HTTP bridge that ESP32 and other network remotes send their
 # keys to, started at logon. The Windows counterpart of install.sh; mirroring needs no helper here
 # (Windows' own Cast panel sends the sound too), so there's no -Audio.
@@ -28,7 +28,7 @@ function Find-Python {
         } catch { continue }
         if ($LASTEXITCODE -eq 0 -and $version -and [version]$version -ge [version]'3.10') { return ,$candidate }
     }
-    throw 'TV Remote needs Python 3.10 or later: winget install Python.Python.3.13 (or python.org), then run this again'
+    throw 'Samsung & Apple TV Remote needs Python 3.10 or later: winget install Python.Python.3.13 (or python.org), then run this again'
 }
 
 $Venv = Join-Path $AppDir 'venv'
@@ -56,7 +56,8 @@ $Icon = Join-Path $AppDir 'tv-remote.ico'
 & $Python -I (Join-Path $AppDir 'tools\make_icon.py') $Icon
 if ($LASTEXITCODE) { throw 'Making the icon failed' }
 
-$Shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'TV Remote.lnk'
+$AppName = 'Samsung & Apple TV Remote'
+$Shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) "$AppName.lnk"
 Write-Host "Start menu: $Shortcut"
 $link = (New-Object -ComObject WScript.Shell).CreateShortcut($Shortcut)
 $link.TargetPath = $PythonW  # pythonw: no console window behind the remote
@@ -69,7 +70,7 @@ $link.Save()
 # tvremote:// links (a dashboard tile) open the remote; tvremote://cast also opens the cast window.
 $Scheme = 'HKCU:\Software\Classes\tvremote'
 Write-Host 'links: tvremote://'
-New-Item -Path $Scheme -Value 'URL:TV Remote' -Force | Out-Null
+New-Item -Path $Scheme -Value "URL:$AppName" -Force | Out-Null
 New-ItemProperty -Path $Scheme -Name 'URL Protocol' -Value '' -Force | Out-Null
 New-Item -Path "$Scheme\DefaultIcon" -Value $Icon -Force | Out-Null
 New-Item -Path "$Scheme\shell\open\command" -Value """$PythonW"" -I ""$Main"" ""%1""" -Force | Out-Null
@@ -100,7 +101,7 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
 }
 
 if ($Bridge) {
-    $Task = 'TV Remote bridge'
+    $Task = "$AppName bridge"
     Write-Host "bridge: scheduled task '$Task' at logon (port 8198; token: tv-remote serve --token)"
     $action = New-ScheduledTaskAction -Execute $PythonW -Argument "-I ""$Main"" serve" -WorkingDirectory $AppDir
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
@@ -118,16 +119,16 @@ $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     [Security.Principal.WindowsBuiltInRole]::Administrator)
 $ports = if ($Bridge) { '8198,8199' } else { '8199' }
 $rules = @(
-    "New-NetFirewallRule -DisplayName 'TV Remote (TCP)' -Direction Inbound -Protocol TCP -LocalPort $ports -RemoteAddress LocalSubnet -Profile Private -Action Allow",
-    "New-NetFirewallRule -DisplayName 'TV Remote (UDP)' -Direction Inbound -Protocol UDP -LocalPort 8199 -RemoteAddress LocalSubnet -Profile Private -Action Allow"
+    "New-NetFirewallRule -DisplayName '$AppName (TCP)' -Direction Inbound -Protocol TCP -LocalPort $ports -RemoteAddress LocalSubnet -Profile Private -Action Allow",
+    "New-NetFirewallRule -DisplayName '$AppName (UDP)' -Direction Inbound -Protocol UDP -LocalPort 8199 -RemoteAddress LocalSubnet -Profile Private -Action Allow"
 )
 if ($admin) {
-    Remove-NetFirewallRule -DisplayName 'TV Remote (TCP)', 'TV Remote (UDP)' -ErrorAction SilentlyContinue
+    Remove-NetFirewallRule -DisplayName "$AppName (TCP)", "$AppName (UDP)" -ErrorAction SilentlyContinue
     foreach ($rule in $rules) { Invoke-Expression $rule | Out-Null }
-    Write-Host "firewall: TV Remote may take connections from your local network (TCP $ports, UDP 8199)"
+    Write-Host "firewall: $AppName may take connections from your local network (TCP $ports, UDP 8199)"
 } else {
     Write-Host 'Note: to let the TV reach casts (and remotes reach the bridge), run these once in an administrator PowerShell:'
     foreach ($rule in $rules) { Write-Host "  $rule" }
     Write-Host '  Or allow Python on Private networks when Windows asks.'
 }
-Write-Host "Done. Set your TV's address in $env:APPDATA\tv-remote\config.json (see README), then open TV Remote from the Start menu."
+Write-Host "Done. Set your TV's address in $env:APPDATA\tv-remote\config.json (see README), then open $AppName from the Start menu."

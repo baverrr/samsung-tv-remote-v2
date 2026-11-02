@@ -71,11 +71,11 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'TV Remote.lnk'
+          $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'Samsung & Apple TV Remote.lnk'
           if (-not (Test-Path $lnk)) { throw "no Start menu shortcut at $lnk" }
           $cmd = (Get-Item 'HKCU:\Software\Classes\tvremote\shell\open\command').GetValue('')
           if ($cmd -notlike '*pythonw.exe*tv_remote.py*%1*') { throw "tvremote:// opens: $cmd" }
-          if (-not (Get-ScheduledTask -TaskName 'TV Remote bridge')) { throw 'no bridge task' }
+          if (-not (Get-ScheduledTask -TaskName 'Samsung & Apple TV Remote bridge')) { throw 'no bridge task' }
           $bin = Join-Path $env:LOCALAPPDATA 'Programs\tv-remote\bin'
           $ErrorActionPreference = 'Continue'  # its usage goes to stderr, which 'Stop' would turn into an error
           & "$bin\tv-remote.cmd" help 2>&1 | Out-Null  # not a command: the usage, exit 1 (no window)

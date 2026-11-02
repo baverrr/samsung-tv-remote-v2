@@ -34,6 +34,7 @@ import websocket
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 WINDOWS = os.name == "nt"
+APP_NAME = "Samsung & Apple TV Remote"  # what the app is called wherever people see it
 
 
 def config_dir():
@@ -650,9 +651,9 @@ def press_win_k():
 def fatal(msg) -> NoReturn:
     if WINDOWS:  # pythonw has no console: a message box is the only way this is seen
         import ctypes
-        ctypes.windll.user32.MessageBoxW(None, msg, "TV Remote", 0x10)  # pyright: ignore[reportAttributeAccessIssue]
+        ctypes.windll.user32.MessageBoxW(None, msg, APP_NAME, 0x10)  # pyright: ignore[reportAttributeAccessIssue]
     elif shutil.which("kdialog"):
-        subprocess.run(["kdialog", "--title", "TV Remote", "--error", msg], check=False)
+        subprocess.run(["kdialog", "--title", APP_NAME, "--error", msg], check=False)
     sys.exit(msg)
 
 
@@ -829,7 +830,7 @@ def gui(cast_window=False):
     try:
         import remote_qt
     except ImportError as e:
-        fatal(f"TV Remote needs Qt for Python ({e.name}):\n" + (
+        fatal(f"{APP_NAME} needs Qt for Python ({e.name}):\n" + (
               "run install.ps1 again" if WINDOWS else
               "sudo apt install python3-pyside6.qtwidgets python3-pyside6.qtsvg"))
     try:

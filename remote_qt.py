@@ -876,7 +876,7 @@ class RemoteWindow(QWidget):
         self.setObjectName("window")
         self.device = device or core.pick_device(cfg)
         self.apple = self.device == "appletv"
-        self.setWindowTitle("Apple TV Remote" if self.apple else "TV Remote")
+        self.setWindowTitle("Apple TV Remote" if self.apple else "Samsung TV Remote")
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)  # clicking the background leaves the text box
         self.root = cfg  # the whole config; self.cfg is this device's part of it (the same dict for Samsung)
         self.turned_off = False  # set once the TV confirmed it went off, until it connects again
@@ -2272,14 +2272,14 @@ def raise_existing(msg):
                 conn.send_bytes(msg + b"\n" + token)
             return True
         except AuthenticationError:
-            raise InstanceError("Another user's program is holding the TV Remote's instance pipe.") from None
+            raise InstanceError("Another user's program is holding the remote's instance pipe.") from None
         except (OSError, EOFError):
             return False
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.connect(INSTANCE_SOCKET)
             if not same_user(s):
-                raise InstanceError("Another user's program is holding the TV Remote's instance socket.")
+                raise InstanceError("Another user's program is holding the remote's instance socket.")
             s.sendall(msg + b"\n" + token)
         return True
     except OSError:
@@ -2314,12 +2314,12 @@ def claim_instance(msg):
             continue
         listener.listen()
         return Instance(listener)
-    raise InstanceError("Another TV Remote seems to be starting but doesn't answer; try again in a moment.")
+    raise InstanceError(f"Another {core.APP_NAME} seems to be starting but doesn't answer; try again in a moment.")
 
 
 def first_device(cfg, why):
     """No device is set up: say how, and offer to set up an Apple TV here. The device, or None to quit."""
-    box = QMessageBox(QMessageBox.Icon.Information, "TV Remote", why, QMessageBox.StandardButton.Close)
+    box = QMessageBox(QMessageBox.Icon.Information, core.APP_NAME, why, QMessageBox.StandardButton.Close)
     setup = box.addButton("Set up Apple TV…", QMessageBox.ButtonRole.AcceptRole)
     box.exec()
     if box.clickedButton() is setup and AppleSetupDialog(None, cfg).exec() == QDialog.DialogCode.Accepted:
@@ -2345,7 +2345,7 @@ def run(cast_window=False):
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("tvremote")  # pyright: ignore[reportAttributeAccessIssue]
     app = QApplication([])
-    app.setApplicationName("TV Remote")
+    app.setApplicationName(core.APP_NAME)
     app.setDesktopFileName("tv-remote")  # Wayland app_id: KDE matches it to tv-remote.desktop
     app.setWindowIcon(QIcon.fromTheme("tvremote", QIcon(str(HERE / "tv-remote.svg"))))
     app.setPalette(palette())

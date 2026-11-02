@@ -63,7 +63,7 @@ def test_mirroring_on_windows_opens_the_cast_panel(windows, user32):
 def test_a_fatal_error_on_windows_is_a_message_box(windows, user32):
     with pytest.raises(SystemExit, match="broken"):
         core.fatal("broken")
-    assert user32 == [("MessageBoxW", (None, "broken", "TV Remote", 0x10))]
+    assert user32 == [("MessageBoxW", (None, "broken", core.APP_NAME, 0x10))]
 
 
 def test_saving_waits_out_windows_holding_the_file(windows, monkeypatch, tmp_path):

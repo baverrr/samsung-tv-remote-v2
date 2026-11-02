@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=TV Remote
+Name=Samsung & Apple TV Remote
 GenericName=TV Remote Control
 Comment=Control, cast to and mirror onto a Samsung TV
 Exec="@BIN@" %u

@@ -1,8 +1,8 @@
 # Terms and Conditions
 
-**Samsung TV Remote** · Effective 1 November 2026
+**Samsung & Apple TV Remote** · Effective 1 November 2026
 
-These terms apply to your use of Samsung TV Remote ("the app"), its source code and its
+These terms apply to your use of Samsung & Apple TV Remote ("the app"), its source code and its
 documentation. By downloading, installing or using the app, you agree to them. If you don't
 agree, don't use the app.
 

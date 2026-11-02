@@ -1,8 +1,8 @@
 # Privacy Policy
 
-**Samsung TV Remote** · Effective 31 October 2026
+**Samsung & Apple TV Remote** · Effective 31 October 2026
 
-Samsung TV Remote ("the app") is a desktop program that runs entirely on your own computer
+Samsung & Apple TV Remote ("the app") is a desktop program that runs entirely on your own computer
 and talks only to the Samsung TV and Apple TV, and to remotes you set up yourself, on your local network.
 It has no accounts, no online servers, no analytics and no advertising. The author never receives any information about you or your use
 of the app.
