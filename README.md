@@ -150,7 +150,7 @@ Click the keys, or use your keyboard. Press **?** in the window for this list.
 ```sh
 tv-remote key volup mute            # keys, short (volup) or full (KEY_VOLUP) names
 tv-remote apps                      # installed apps and their IDs (★ = on the remote)
-tv-remote launch netflix            # open an app (exact name first, then partial)
+tv-remote launch netflix            # open an app: its key or ID, else its name (exact, then partial)
 tv-remote text "stranger things"    # type into the TV's on-screen keyboard
 tv-remote on | off                  # power
 tv-remote info                      # the TV's details (JSON)
@@ -354,7 +354,7 @@ TV is set up (or `--device appletv` / `samsung`).
 
 | Request | Does |
 |---|---|
-| `POST /key/<key>` | A remote key: `volup` or `KEY_VOLUP` (an Apple TV also takes `select`, `menu`, `play_pause`, …) |
+| `POST /key/<key>` | A remote key: `volup` or `KEY_VOLUP` (an Apple TV also takes `select`, `menu`, `play_pause`, …; its `power` sleeps it as `/power/off` does) |
 | `POST /launch/<app>` | Opens an installed app: `netflix`, the TV's name for it, or an Apple TV bundle ID |
 | `POST /power/on` | Turns the TV on (answers at once, `202`) |
 | `POST /power/off` | Turns it off and checks it went off, in the background (`202`) |
@@ -366,11 +366,11 @@ Replies are JSON: `{"ok": true, ...}` or `{"error": "..."}`.
 
 1. Install with `./install.sh --bridge` (Linux) or `install.ps1 -Bridge` (Windows), so it starts by itself.
 2. Get the token with `tv-remote serve --token`. Every request needs `Authorization: Bearer <token>`.
-3. Optionally limit who can connect: `"bridge_clients": ["192.0.2.30"]` in the settings file.
+3. Optionally limit who can connect: `"bridge_clients": ["192.0.2.30"]` in the settings file (a list; one address on its own also works).
 4. Let the device through your firewall: `sudo ufw allow from <ESP32 address> to any port 8198 proto tcp`.
 
 The token travels unencrypted on plain HTTP: fine on a home network, but don't forward the port to the
-internet.
+internet. A connection that sends nothing for 15 seconds is closed (ESPHome simply reconnects).
 
 <details>
 <summary>An ESPHome example, and status codes</summary>
@@ -441,7 +441,7 @@ and the bridge work the same whichever TV they drive.
 
 | What | How |
 |---|---|
-| Keys and text | WebSocket on `wss://TV:8002`. The first connection shows an **Allow** prompt; the pairing token is saved. |
+| Keys and text | WebSocket on `wss://TV:8002`. The first connection shows an **Allow** prompt; the pairing token is saved, with the fingerprint of the TV's self-signed certificate. The token is only sent to that certificate: a TV showing another one (a reset, a different TV, or something posing as it) gets the **Allow** prompt again instead. |
 | Apps | REST on `http://TV:8001/api/v2/applications/<id>`: each known app ID is checked (404 = not installed), and apps open with a POST. |
 | Power | `http://TV:8001/api/v2/` reports on or standby; power-on is a Wake-on-LAN packet. |
 | Casting | The TV's DLNA renderer (port 9197). A small server on the PC (port 8199) serves only the file that's playing, only to the TV, under a link that stops working when the queue moves on. |
@@ -465,13 +465,14 @@ and the bridge work the same whichever TV they drive.
 | `tools/build-gnd.sh`, `tools/gnd-window-resize.patch` | The patched GNOME Network Displays build |
 | `tools/screenshots.py` | Re-renders the screenshots in `docs/` |
 | `test_*.py` | Tests (TVs, PipeWire and the Windows APIs are faked; nothing touches the network) |
+| `conftest.py` | Shared test setup: no test opens a TLS connection to a TV |
 | `docs/`, `icons/`, `tv-remote.svg` | Screenshots and diagrams, Lucide icons, the app icon |
 | `.gitattributes` | Keeps the patch and shell scripts at LF line endings on Windows checkouts |
 
 ## Development
 
 ```sh
-./venv/bin/pip install pytest pytest-qt ruff
+./venv/bin/pip install pytest pytest-qt ruff patch-ng  # patch-ng: Windows' patcher, so pyright resolves tools/
 QT_QPA_PLATFORM=offscreen ./venv/bin/python -I -m pytest -q
 ./venv/bin/ruff check .
 pyright

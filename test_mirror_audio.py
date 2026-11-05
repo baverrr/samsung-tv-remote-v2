@@ -277,3 +277,15 @@ def test_restart_after_a_failed_switch_keeps_the_restore_target(pulse, monkeypat
     with pytest.raises(ma.PactlError):
         ma.Router().check()
     assert json.loads(ma.STATE.read_text()) == {"active_sink": None, "previous": HEADSET}
+
+
+def test_empty_xdg_variables_count_as_unset(monkeypatch):
+    import importlib
+    monkeypatch.setenv("XDG_CONFIG_HOME", "")
+    monkeypatch.setenv("XDG_STATE_HOME", "")
+    try:
+        reloaded = importlib.reload(ma)
+        assert reloaded.CONFIG.is_absolute() and reloaded.STATE.is_absolute()  # not next to wherever it runs
+    finally:
+        monkeypatch.undo()
+        importlib.reload(ma)

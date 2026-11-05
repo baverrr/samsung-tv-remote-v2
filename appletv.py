@@ -15,7 +15,7 @@ import contextlib
 import re
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import tv_remote as core
 
@@ -187,11 +187,12 @@ class LoopThread:
 
 def translate(e):
     """pyatv's exceptions as the ones callers already handle: OSError for 'couldn't reach it',
-    PairingRefused for credentials it no longer takes, RuntimeError for the rest."""
-    from pyatv import exceptions as x
-
+    PairingRefused for credentials it no longer takes, RuntimeError for the rest. Checked before pyatv is
+    imported, so NeedsPyatv (and anything else already in those terms) gets through without it."""
     if isinstance(e, (OSError, ValueError, RuntimeError)):
         return e
+    from pyatv import exceptions as x
+
     if isinstance(e, (x.ConnectionFailedError, x.ConnectionLostError, x.OperationTimeoutError,
                       asyncio.TimeoutError)):
         return ConnectionError(str(e) or type(e).__name__)
@@ -218,7 +219,8 @@ def playing_info(playing, app_name=None):
 
 def make_listener(owner):
     """The object pyatv reports to (on the loop thread): connection, now playing and power changes.
-    pyatv keeps only weak references to it, so the AppleTV holds it."""
+    pyatv keeps only weak references to it, so the AppleTV holds it. One per connection: a late report from
+    a connection that was already replaced names that one (self.atv), so it can't drop the new one."""
     from pyatv.const import KeyboardFocusState
     from pyatv.interface import (
         DeviceListener,
@@ -228,11 +230,13 @@ def make_listener(owner):
     )
 
     class Listener(DeviceListener, PushListener, PowerListener, KeyboardListener):
+        atv: Any = None  # the connection this listener reports for, set once it's made
+
         def connection_lost(self, exception):
-            owner._lost()
+            owner._lost(self.atv)
 
         def connection_closed(self):
-            owner._lost()
+            owner._lost(self.atv)
 
         def playstatus_update(self, updater, playstatus):
             owner._playing(playstatus)
@@ -263,11 +267,13 @@ class AppleTV:
         self.apps_from_cache = False
         self.atv = None
         self.playing = None  # the last now-playing info, for AirPlayRenderer
+        self.playing_at = 0.0  # when it came (time.monotonic())
         self.push_error = None  # why now playing couldn't start on this connection, if it couldn't
         self.closing = False
         self._listener = None  # make_listener(), once pyatv is imported
         self._artwork_hash = None
         self._samsung = None  # the Samsung TV client the volume keys go to (volume_via_samsung)
+        self._samsung_lock = threading.Lock()  # the window's worker and the bridge's threads may both make it
         self.loop = LoopThread()
         self._connect_lock = asyncio.Lock()  # bound to self.loop.loop on first use (Python 3.10+)
 
@@ -304,14 +310,15 @@ class AppleTV:
             except Exception:  # noqa: BLE001 - e.g. "Failed to set up remote control channel" right after
                 await asyncio.sleep(1.5)  # another connection (the old window, a CLI run) closed; one more try
                 atv = await pyatv.connect(conf, asyncio.get_running_loop())
-            self._listener = self._listener or make_listener(self)
-            atv.listener = self._listener
-            atv.power.listener = self._listener
+            self._listener = listener = make_listener(self)
+            listener.atv = atv
+            atv.listener = listener
+            atv.power.listener = listener
             with contextlib.suppress(Exception):  # typing still works without the open/close reports
-                atv.keyboard.listener = self._listener
+                atv.keyboard.listener = listener
             self.push_error = None
             try:
-                atv.push_updater.listener = self._listener
+                atv.push_updater.listener = listener
                 atv.push_updater.start()
             except Exception as e:  # noqa: BLE001 - no MRP: keys, apps and power still work
                 self.push_error = str(translate(e))
@@ -339,16 +346,21 @@ class AppleTV:
             except OSError:
                 pass  # only a shortcut for next time
 
-    def _lost(self):
+    def _lost(self, which=None):
+        """A connection dropped or closed. which is the connection that said so: one that was already
+        replaced (a reconnect in _do()) is ignored, so its late report doesn't drop the new connection."""
+        if which is not None and which is not self.atv:
+            return
         atv, self.atv = self.atv, None
+        self.playing = None  # no more reports come on it: AirPlayRenderer mustn't count on from the last one
         if atv is not None and not self.closing:
             self.on_event("disconnected", None)
 
     async def _do(self, fn):
         """fn(atv) on a connected box; a connection that dropped is made again once."""
+        atv = await self._ensure()  # first: without pyatv, it raises NeedsPyatv rather than ImportError
         from pyatv import exceptions as x
 
-        atv = await self._ensure()
         try:
             return await fn(atv)
         except (x.ConnectionLostError, ConnectionError):
@@ -360,9 +372,11 @@ class AppleTV:
         return self.loop.run(self._ensure())
 
     def close(self):
-        self.closing = True
-        if self._samsung is not None:
-            self._samsung.close()
+        with self._samsung_lock:  # under the lock, so a volume key on another thread can't make one after this
+            self.closing = True
+            samsung, self._samsung = self._samsung, None
+        if samsung is not None:
+            samsung.close()
         atv, self.atv = self.atv, None
         if atv is not None:
             async def go():
@@ -379,11 +393,10 @@ class AppleTV:
         return resolve_key(name)
 
     def key(self, key):
-        if key in ("KEY_POWER", "power"):
-            self.turn_off()
-            return
         method = resolve_key(key)
-        if method in VOLUME_KEYS:
+        if method == "power":  # KEY_POWER, power or POWER
+            self.turn_off()
+        elif method in VOLUME_KEYS:
             self.volume(method)
         else:
             self.remote(method)
@@ -397,9 +410,13 @@ class AppleTV:
         """volume_up or volume_down: on the Samsung TV if so set, else through the Apple TV, which says
         plainly when it isn't controlling the TV's volume (tvOS takes the key and does nothing then)."""
         if self.volume_via_samsung():
-            if self._samsung is None:
-                self._samsung = core.TV(self.root)
-            self._samsung.key(VOLUME_KEYS[method])
+            with self._samsung_lock:
+                if self.closing:
+                    raise ConnectionError("The remote is closing")
+                if self._samsung is None:
+                    self._samsung = core.TV(self.root, self._samsung_event)
+                samsung = self._samsung
+            samsung.key(VOLUME_KEYS[method])
             return
 
         async def go(atv):
@@ -409,6 +426,12 @@ class AppleTV:
                 raise RuntimeError(VOLUME_UNAVAILABLE)
             await getattr(atv.remote_control, method)()
         self.loop.run(self._do(go))
+
+    def _samsung_event(self, event, data):
+        """The Samsung TV's events while it takes the volume keys: only its "Allow" prompt matters here, as
+        the key waits for it."""
+        if event == "pairing":
+            self.on_event("pairing", None)
 
     def remote(self, method):
         """A pyatv RemoteControl call: select, play, pause, stop..."""
@@ -495,12 +518,12 @@ class AppleTV:
     def wait_until_on(self, timeout=25):
         """True once the box reports it's awake. The wake is sent once more halfway: tvOS sometimes
         misses the first one (1 of 3 tries on 2026-11-01), like a Samsung TV dropping KEY_POWER."""
-        start = time.time()
+        start = core.now()
         resent = False
-        while time.time() - start < timeout:
+        while core.now() - start < timeout:
             if self.power_state() == "on":
                 return True
-            if not resent and time.time() - start >= timeout / 2:
+            if not resent and core.now() - start >= timeout / 2:
                 resent = True
                 with contextlib.suppress(OSError, RuntimeError):
                     self.wake()
@@ -513,8 +536,8 @@ class AppleTV:
         async def go(atv):
             await atv.power.turn_off()
         self.loop.run(self._do(go))
-        end = time.time() + 15
-        while time.time() < end:
+        end = core.now() + 15
+        while core.now() < end:
             time.sleep(1)
             if self.power_state() == "standby":
                 return True
@@ -535,7 +558,7 @@ class AppleTV:
         with contextlib.suppress(Exception):  # only a label
             app = atv.metadata.app.name if atv and atv.metadata.app else None
         info = playing_info(playstatus, app)
-        self.playing = info
+        self.playing, self.playing_at = info, time.monotonic()
         self.on_event("now_playing", info)
         if info["hash"] != self._artwork_hash:
             self._artwork_hash = info["hash"]
@@ -646,10 +669,15 @@ class AirPlayRenderer:
         return {"playing": "PLAYING", "paused": "PAUSED_PLAYBACK"}.get(state, "TRANSITIONING")
 
     def position(self):
-        if self.client.push_error:
+        """From the last now-playing report, which the box pushes on every change (play, pause, seek), with
+        the time since added while it plays: no request to the box on every poll."""
+        info = self.client.playing
+        if self.client.push_error or not info:
             return 0, 0
-        info = self.client.now_playing()
-        return info["position"] or 0, info["total"] or 0
+        pos, total = info.get("position") or 0, info.get("total") or 0
+        if info.get("state") == "playing":
+            pos += time.monotonic() - self.client.playing_at
+        return (min(pos, total) if total else pos), total
 
 
 def discover(timeout=6, hosts=()):

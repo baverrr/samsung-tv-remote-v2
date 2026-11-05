@@ -25,8 +25,9 @@ import traceback
 from pathlib import Path
 
 SINK_PREFIX = "gnome_network_displays"
-STATE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "tv-mirror-audio.json"
-CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "tv-remote" / "mirror-audio.json"
+# An empty XDG variable counts as unset (XDG spec), as in tv_remote.config_dir().
+STATE = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "tv-mirror-audio.json"
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "tv-remote" / "mirror-audio.json"
 DEFAULT_CONFIG = {
     "_comment": "While mirroring, these stay on this machine's output instead of going to the TV. "
                 "Apps: case-insensitive part of the app name, binary, app/Flatpak ID or command. "

@@ -309,8 +309,11 @@ def test_airplay_renderer_plays_the_cast_url_and_reports_states(client, box):
     assert r.state() == "PAUSED_PLAYBACK"
     r.play()  # resume: a remote command, not a new stream
     assert box.log[-1] == "play"
-    box.now = playing(position=42, total=100)
-    assert r.position() == (42, 100)
+    client.playing, client.playing_at = {"state": "paused", "position": 42, "total": 100}, time.monotonic()
+    assert r.position() == (42, 100)  # from what the box pushed: no request on every poll
+    client.playing = {"state": "playing", "position": 42, "total": 100}
+    client.playing_at = time.monotonic() - 5
+    assert 47 <= r.position()[0] < 48 and r.position()[1] == 100  # the clock runs between its reports
     assert box.played is not None
     client.loop.loop.call_soon_threadsafe(box.played.set)  # the video ends
     deadline = time.time() + 3
@@ -613,7 +616,7 @@ def test_a_missed_wake_is_sent_again(client, box, monkeypatch):
             box.power.power_state = PowerState.On
     monkeypatch.setattr(box.power, "turn_on", turn_on)
     clock = iter(range(100))
-    monkeypatch.setattr(time, "time", lambda: next(clock))
+    monkeypatch.setattr(core, "now", lambda: next(clock))
     client.wake()
     assert client.wait_until_on(timeout=10)
     assert len(wakes) == 2
@@ -999,3 +1002,91 @@ def test_the_volume_setting_survives_a_broken_value(config):
     cfg["appletv"]["volume_via_samsung"] = "yes"
     config.write_text(json.dumps(cfg))
     assert appletv.section(core.load_config())["volume_via_samsung"] is False
+
+
+def test_without_pyatv_the_remote_says_so_instead_of_crashing(monkeypatch):
+    import builtins
+    real = builtins.__import__
+
+    def no_pyatv(name, *args, **kwargs):
+        if name == "pyatv" or name.startswith("pyatv."):
+            raise ImportError("No module named 'pyatv'", name="pyatv")
+        return real(name, *args, **kwargs)
+    c = appletv.AppleTV(core.load_config())
+    monkeypatch.setattr(builtins, "__import__", no_pyatv)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    try:
+        with pytest.raises(appletv.NeedsPyatv):
+            c.power_state()  # not ImportError, and not "off"
+        with pytest.raises(SystemExit, match="needs pyatv"):
+            core.cli(["key", "select"])  # one line, not a traceback
+    finally:
+        c.close()
+
+
+def test_a_late_report_from_a_replaced_connection_doesnt_drop_the_new_one(live, wired, events, monkeypatch):
+    import pyatv
+    live.connect()
+    old = live._listener
+    newer: Any = FakeBox()
+    newer.push_updater = SimpleNamespace(listener=None, start=lambda: None)
+
+    async def connect(c, loop):
+        return newer
+    monkeypatch.setattr(pyatv, "connect", connect)
+    live.atv = None  # as _do() does when a request finds the connection gone
+    assert live.connect() is newer
+    old.connection_closed()  # the old connection's close, arriving after the new one is up
+    assert live.atv is newer and ("disconnected", None) not in events
+    live._listener.connection_lost(Exception("gone"))
+    assert live.atv is None and events[-1] == ("disconnected", None)
+
+
+def test_any_spelling_of_the_power_key_sleeps_the_box(client, box):
+    client.key("POWER")
+    assert box.log == ["turn_off"]
+
+
+def test_volume_on_the_samsung_tv_shows_its_allow_prompt(client, events, monkeypatch):
+    made = []
+
+    def key(self, k):
+        made.append(self)
+        self.on_event("pairing", None)  # no token yet: the Samsung TV asks to allow this remote
+    monkeypatch.setattr(core.TV, "key", key)
+    client.cfg["volume_via_samsung"] = True
+    client.key("KEY_VOLUP")
+    client.key("KEY_VOLDOWN")
+    assert ("pairing", None) in events
+    assert len(made) == 2 and made[0] is made[1]  # one Samsung TV client, kept
+
+
+def test_bridge_power_key_sleeps_the_box_in_the_background(server, monkeypatch):
+    slept = threading.Event()
+    monkeypatch.setattr(server.tv, "power_state", lambda: "on")
+    monkeypatch.setattr(server.tv, "turn_off", lambda: slept.set() or True)
+    assert request(server, "POST", "/key/power") == (202, {"ok": True})  # answers at once, like /power/off
+    assert slept.wait(3) and server.tv.calls == []
+
+
+def test_no_samsung_client_is_made_once_the_remote_closes(client, monkeypatch):
+    monkeypatch.setattr(core.TV, "key", lambda self, k: None)
+    client.cfg["volume_via_samsung"] = True
+    client.key("KEY_VOLUP")
+    made = client._samsung
+    assert made is not None
+    closed = []
+    monkeypatch.setattr(made, "close", lambda: closed.append(True))
+    client.close()
+    assert closed and client._samsung is None
+    with pytest.raises(ConnectionError):  # a key that was on its way: no new websocket left open
+        client.key("KEY_VOLUP")
+    assert client._samsung is None
+
+
+def test_a_lost_connection_forgets_what_was_playing(client):
+    client.atv = object()
+    client.playing, client.playing_at = {"state": "playing", "position": 10, "total": 100}, time.monotonic() - 50
+    client._lost(client.atv)
+    assert client.playing is None
+    assert appletv.AirPlayRenderer(client).position() == (0, 0)  # not 60 s on from a report that's stale

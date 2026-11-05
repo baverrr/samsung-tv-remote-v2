@@ -28,6 +28,7 @@ from PySide6.QtWidgets import QApplication, QFrame, QToolButton
 import appletv
 import remote_qt as rq
 import tv_remote as core
+from conftest import TEST_FINGERPRINT, FakeTLS
 
 KEYS = [(Qt.Key.Key_Up, "KEY_UP"), (Qt.Key.Key_Down, "KEY_DOWN"), (Qt.Key.Key_Left, "KEY_LEFT"),
         (Qt.Key.Key_Right, "KEY_RIGHT"), (Qt.Key.Key_Return, "KEY_ENTER"), (Qt.Key.Key_Escape, "KEY_RETURN"),
@@ -708,7 +709,7 @@ def test_wait_until_off(monkeypatch, states, expected):
     monkeypatch.setattr(core.TV, "power_state", lambda self: next(replies, "on"))
     monkeypatch.setattr(core.time, "sleep", lambda s: None)
     clock = iter(range(100))
-    monkeypatch.setattr(core.time, "time", lambda: next(clock))
+    monkeypatch.setattr(core, "now", lambda: next(clock))
     assert tv.wait_until_off() is expected
 
 
@@ -918,6 +919,7 @@ def test_cli_cast_reports_nothing_castable_in_one_line(monkeypatch, tmp_path):
     import cast
     closed = []
     monkeypatch.setattr(cast.Caster, "close", lambda self: closed.append(True) or self._stop.set())
+    monkeypatch.setattr(core.TV, "power_state", lambda self: "on")
     (tmp_path / "notes.txt").write_text("x")
     with pytest.raises(SystemExit, match=r"^Nothing castable there"):
         core.cli(["cast", str(tmp_path)])
@@ -1021,7 +1023,8 @@ def no_reader(monkeypatch):
     ("test", "rotated", "rotated"),
 ])
 def test_connect_saves_the_pairing_token(monkeypatch, config, no_reader, saved, offered, stored):
-    config.write_text(json.dumps({"host": HOST, "mac": MAC, "token": saved, "apps": APPS}))
+    pin = {"cert_sha256": TEST_FINGERPRINT} if saved else {}
+    config.write_text(json.dumps({"host": HOST, "mac": MAC, "token": saved, "apps": APPS, **pin}))
     events, urls = [], []
     ws = FakeWS([{"event": "ms.channel.connect", "data": {"token": offered}}])
     monkeypatch.setattr(core.websocket, "create_connection", lambda url, **kw: urls.append(url) or ws)
@@ -1033,6 +1036,45 @@ def test_connect_saves_the_pairing_token(monkeypatch, config, no_reader, saved, 
     assert events == (["pairing"] if not saved else []) + ["connected"]
     if saved == offered:
         assert config.stat().st_mtime_ns == mtime  # not rewritten
+
+
+@pytest.mark.parametrize(("pinned", "sends_token", "saved_pin"), [
+    (None, True, TEST_FINGERPRINT),  # paired before pinning: the token goes, and this certificate is pinned
+    (TEST_FINGERPRINT, True, TEST_FINGERPRINT),  # the TV it paired with
+    ("f" * 64, False, TEST_FINGERPRINT),  # another certificate: no token, pair afresh, then pin the new one
+])
+def test_the_token_goes_only_to_the_pinned_certificate(monkeypatch, config, no_reader, pinned, sends_token,
+                                                       saved_pin):
+    pin = {"cert_sha256": pinned} if pinned else {}
+    config.write_text(json.dumps({"host": HOST, "mac": MAC, "token": "test", "apps": APPS, **pin}))
+    offered = "test" if sends_token else "fresh"
+    events, urls = [], []
+    ws = FakeWS([{"event": "ms.channel.connect", "data": {"token": offered}}])
+    monkeypatch.setattr(core.websocket, "create_connection", lambda url, **kw: urls.append(url) or ws)
+    tv = core.TV(core.load_config(), lambda e, d: events.append(e))
+    tv.connect()
+    assert ("&token=test" in urls[0]) == sends_token
+    assert ("pairing" in events) == (not sends_token)
+    saved = json.loads(config.read_text())
+    assert saved["cert_sha256"] == saved_pin and saved["token"] == offered
+
+
+def test_a_failed_handshake_closes_the_tls_socket(monkeypatch, no_reader):
+    sockets = []
+
+    def open_tls(self):
+        sockets.append(FakeTLS())
+        return sockets[-1], TEST_FINGERPRINT
+
+    def refuse(url, **kw):
+        raise OSError("handshake failed")
+
+    monkeypatch.setattr(core.TV, "_open_tls", open_tls)
+    monkeypatch.setattr(core.websocket, "create_connection", refuse)
+    monkeypatch.setattr(core.TV, "locate", lambda self: None)
+    with pytest.raises(OSError):
+        core.TV(core.load_config()).connect()
+    assert sockets and all(s.closed for s in sockets)
 
 
 def test_connect_reports_a_refusal_and_keeps_no_socket(monkeypatch, no_reader):
@@ -1356,6 +1398,72 @@ def suppress_accept(listener):
         listener.accept()
 
 
+def test_a_damaged_instance_key_is_replaced(config, monkeypatch):
+    monkeypatch.setattr(core, "config_dir", lambda: config.parent)
+    (config.parent / "instance.key").write_bytes(b"short")
+    key = rq.instance_key()
+    assert len(key) == 32 and rq.instance_key() == key
+    assert not list(config.parent.glob("*.tmp"))
+
+
+def test_two_first_launches_end_up_with_one_key(config, monkeypatch):
+    monkeypatch.setattr(core, "config_dir", lambda: config.parent)
+    path = config.parent / "instance.key"
+    real = os.link
+
+    def other_launch_got_there_first(src, dst):
+        path.write_bytes(b"k" * 32)  # the other launch put its key in place a moment earlier
+        return real(src, dst)
+    monkeypatch.setattr(rq.os, "link", other_launch_got_there_first)
+    assert rq.instance_key() == b"k" * 32  # theirs, not a second key the other launch would refuse
+    assert not list(config.parent.glob("*.tmp"))
+
+
+@WINDOWS_ONLY
+def test_a_caller_that_stalls_doesnt_hold_up_the_next_launch(instance_socket):
+    from multiprocessing.connection import Client
+    running = rq.claim_instance(b"raise")
+    assert running is not None
+    try:
+        stalled = Client(instance_socket, family="AF_PIPE")  # connects, never answers the key check
+        try:
+            assert rq.claim_instance(b"cast") is None
+            got = running.next_message()
+            assert got is not None and got.startswith(b"cast\n")
+        finally:
+            stalled.close()
+    finally:
+        running.close()
+
+
+def test_cli_cast_finds_the_tv_before_serving_to_it(config, monkeypatch, tmp_path):
+    import cast
+    hosts = []
+
+    def power_state(self):
+        self.host = "192.0.2.77"  # locate() found it at its Wi-Fi address
+        return "on"
+
+    def caster(host, on_status, renderer=None):
+        hosts.append(host)
+        raise RuntimeError("stop here")
+    monkeypatch.setattr(core.TV, "power_state", power_state)
+    monkeypatch.setattr(cast, "Caster", caster)
+    with pytest.raises(SystemExit, match="stop here"):
+        core.cli(["cast", str(tmp_path)])
+    assert hosts == ["192.0.2.77"]
+
+
+def test_cli_launch_takes_an_app_key_like_the_bridge(config, monkeypatch):
+    launched = []
+    monkeypatch.setattr(core.TV, "launch", lambda self, app: launched.append(app["appId"]))
+    monkeypatch.setattr(core.time, "sleep", lambda s: None)
+    app_id = APPS[0]["appId"]
+    core.cli(["launch", f"id:{app_id}"])
+    core.cli(["launch", core.key_for_id(app_id)])
+    assert launched == [app_id, app_id]
+
+
 def test_the_instance_key_is_made_once_and_kept(config, monkeypatch):
     monkeypatch.setattr(core, "config_dir", lambda: config.parent)
     key = rq.instance_key()
@@ -1573,6 +1681,16 @@ def test_wait_until_on(monkeypatch):
     monkeypatch.setattr(core.TV, "power_state", lambda self: next(states))
     monkeypatch.setattr(core.time, "sleep", lambda s: None)
     assert tv.wait_until_on() is True
+
+
+def test_power_waits_run_on_the_monotonic_clock(monkeypatch):
+    tv = core.TV(core.load_config())
+    monkeypatch.setattr(core.TV, "power_state", lambda self: "off")
+    monkeypatch.setattr(core.time, "sleep", lambda s: None)
+    monkeypatch.setattr(core.time, "time", lambda: pytest.fail("the wall clock can jump"))
+    clock = iter(range(100))
+    monkeypatch.setattr(core, "now", lambda: next(clock))
+    assert tv.wait_until_on(timeout=5) is False
 
 
 def test_cast_request_escapes_titles_and_urls(monkeypatch):
@@ -2184,3 +2302,66 @@ def test_airplay_cast_window_has_no_photos(qtbot, apple):
     assert win is not None
     assert win.windowTitle() == "AirPlay Cast" and not win.photos_btn.isEnabled() and win.auto.isHidden()
     win.close()
+
+
+def test_launch_looks_on_a_tv_never_scanned(monkeypatch, config):
+    config.write_text(json.dumps({"host": HOST, "mac": MAC, "token": "test", "apps": []}))
+    monkeypatch.setattr(core.TV, "scan_apps", lambda self: self.cfg.__setitem__("apps", APPS) or APPS)
+    tv = core.TV(core.load_config())
+    assert core.find_launchable(tv, "netflix") == APPS[0]  # not "isn't installed" before ever asking
+
+
+@pytest.fixture
+def key_dir(monkeypatch, tmp_path):
+    path = tmp_path / "keys"
+    monkeypatch.setattr(core, "config_dir", lambda: path)
+    return path
+
+
+def test_the_instance_key_is_made_once(key_dir):
+    key = rq.instance_key()
+    assert len(key) == 32 and rq.instance_key() == key and (key_dir / "instance.key").read_bytes() == key
+    assert [p.name for p in key_dir.iterdir()] == ["instance.key"]  # no temporary file left
+
+
+def test_a_key_another_launch_made_meanwhile_is_kept(key_dir, monkeypatch):
+    theirs = b"t" * 32
+
+    def token_bytes(n):  # the other first launch puts its key in place while this one makes its own
+        key_dir.mkdir(exist_ok=True)
+        (key_dir / "instance.key").write_bytes(theirs)
+        return b"o" * n
+    monkeypatch.setattr(rq.secrets, "token_bytes", token_bytes)
+    assert rq.instance_key() == theirs  # what the running remote checks callers against
+
+
+@pytest.mark.parametrize("fixed_meanwhile", [False, True])
+def test_a_damaged_key_is_replaced_once(key_dir, monkeypatch, fixed_meanwhile):
+    key_dir.mkdir()
+    (key_dir / "instance.key").write_bytes(b"short")
+    theirs = b"t" * 32
+    if fixed_meanwhile:
+        def token_bytes(n):
+            (key_dir / "instance.key").write_bytes(theirs)
+            return b"o" * n
+        monkeypatch.setattr(rq.secrets, "token_bytes", token_bytes)
+    key = rq.instance_key()
+    assert len(key) == 32 and (key_dir / "instance.key").read_bytes() == key
+    assert (key == theirs) == fixed_meanwhile
+
+
+def test_the_key_is_made_where_hard_links_arent_possible(key_dir, monkeypatch):
+    def link(src, dst):
+        raise OSError(1, "Operation not permitted")
+    monkeypatch.setattr(rq.os, "link", link)
+    key = rq.instance_key()
+    assert len(key) == 32 and (key_dir / "instance.key").read_bytes() == key
+
+
+def test_the_pipe_key_check_gives_up_on_a_caller_that_stalls():
+    from multiprocessing import Pipe
+    from multiprocessing.connection import deliver_challenge
+
+    ours, theirs = Pipe()
+    with ours, theirs, pytest.raises(TimeoutError):
+        deliver_challenge(rq._TimedConnection(ours, 0.1), b"k" * 32)  # pyright: ignore[reportArgumentType]

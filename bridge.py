@@ -33,6 +33,7 @@ import tv_remote as core
 from cast import ExclusiveHTTPServer
 
 PORT = 8198  # next to the cast server's 8199
+MAX_BODY = 64 * 1024  # nothing takes a body; one this big isn't read, the connection is closed instead
 KEY_RE = re.compile(r"[A-Za-z0-9_]{1,40}")
 
 
@@ -43,14 +44,6 @@ def ensure_token(cfg):
         token = cfg["bridge_token"] = secrets.token_urlsafe(24)
         core.save_config(cfg)
     return token
-
-
-def find_launchable(tv, name):
-    """An installed app by key (netflix, id:<appId>, an Apple TV bundle ID) or by the TV's name for it, or None."""
-    cfg = tv.cfg
-    if tv.kind == "samsung" and (name in core.CATALOG_BY_KEY or name.startswith(core.CUSTOM)):
-        return core.installed_app(cfg, name)
-    return core.installed_app(cfg, name) or core.find_app(cfg["apps"] or tv.scan_apps(), name)
 
 
 class HTTPError(Exception):
@@ -71,6 +64,9 @@ class Bridge(ExclusiveHTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"  # keep-alive: ESPHome's client reuses the connection
+    # A connection that sends nothing (or a body slowly) is dropped after this long, so clients on the LAN,
+    # with the token or without, can't hold the bridge's threads open forever.
+    timeout = 15
 
     @property
     def bridge(self) -> Bridge:
@@ -83,9 +79,8 @@ class Handler(BaseHTTPRequestHandler):
         self._handle("POST")
 
     def _handle(self, method):
-        if int(self.headers.get("Content-Length") or 0):  # nothing takes a body; don't leave it unread
-            self.rfile.read(int(self.headers["Content-Length"]))
         try:
+            self._skip_body()
             self._check_client()
             status, body = self._route(method, urllib.parse.urlsplit(self.path).path.strip("/").split("/"))
         except HTTPError as e:
@@ -103,8 +98,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _skip_body(self):
+        """Nothing takes a body, but one that's sent must be read, or keep-alive would take it for the next
+        request. A length that isn't a number, or is huge, ends the connection instead of being trusted."""
+        length = self.headers.get("Content-Length") or "0"
+        if not (length.isascii() and length.isdigit()):  # also refuses a negative length (it would read until
+            # the client hangs up) and digits int() won't take, such as a superscript
+            self.close_connection = True
+            raise HTTPError(400, "Bad Content-Length")
+        if int(length) > MAX_BODY:
+            self.close_connection = True
+            raise HTTPError(413, "Requests here take no body")
+        if int(length):
+            self.rfile.read(int(length))
+
     def _check_client(self):
         clients = self.bridge.tv.root.get("bridge_clients")
+        if isinstance(clients, str):  # one address written without the list: not a substring match
+            clients = [clients]
+        elif clients and not isinstance(clients, list):
+            raise HTTPError(403, "bridge_clients must be a list of addresses")
         if clients and self.client_address[0] not in clients:
             raise HTTPError(403, "This address isn't in bridge_clients")
         expected = f"Bearer {self.bridge.token}".encode()
@@ -121,11 +134,13 @@ class Handler(BaseHTTPRequestHandler):
                     key = tv.resolve_key(key)
                 except ValueError as e:  # a key the Apple TV doesn't have
                     raise HTTPError(400, str(e)) from None
+                if tv.kind == "appletv" and key == "power":  # a confirmed sleep: in the background, as /power/off
+                    return self._power_off()
                 tv.key(key)
                 return 200, {"ok": True, "key": key}
             case "POST", ["launch", name]:
                 name = urllib.parse.unquote(name)
-                app = find_launchable(tv, name)
+                app = core.find_launchable(tv, name)
                 if not app:
                     raise HTTPError(404, f"No installed app matches {name!r}")
                 tv.launch(app)
@@ -134,12 +149,16 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=self._wake, daemon=True).start()  # outlasts ESPHome's timeout
                 return 202, {"ok": True}
             case "POST", ["power", "off"]:
-                if self.bridge.turning_off.acquire(blocking=False):
-                    threading.Thread(target=self._turn_off, daemon=True).start()
-                return 202, {"ok": True}
+                return self._power_off()
             case "GET", ["status"]:
                 return 200, {"power": tv.power_state()}
         raise HTTPError(404, f"No such request: {method} /{'/'.join(parts)}")
+
+    def _power_off(self):
+        """Start a confirmed power-off in the background (unless one is running): it outlasts ESPHome's timeout."""
+        if self.bridge.turning_off.acquire(blocking=False):
+            threading.Thread(target=self._turn_off, daemon=True).start()
+        return 202, {"ok": True}
 
     def _wake(self):
         try:

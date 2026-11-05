@@ -5,7 +5,8 @@
 # clocks the pipeline, since its clock stops while a resize is renegotiated and everything waiting on
 # it hangs. Also: square pixels before the encoder (a window of any shape is letterboxed, and the
 # encoder's input never changes), a non-async capture sink, frames copied out of PipeWire, a keyframe
-# every second (so the TV recovers quickly from lost packets), and a crash on exit fixed.
+# every second (so the TV recovers quickly from lost packets), a crash on exit fixed, and a race that
+# could abort it on start (connecting to PulseAudio without holding its mainloop lock).
 # The build runs in a container of this machine's Ubuntu release, so no -dev packages are installed here.
 #   tools/build-gnd.sh [version]     (default: the installed gnome-network-displays version)
 set -eu

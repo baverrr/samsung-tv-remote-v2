@@ -100,8 +100,8 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
     Write-Host "Note: added $BinDir to your PATH; open a new terminal to use tv-remote."
 }
 
+$Task = "$AppName bridge"
 if ($Bridge) {
-    $Task = "$AppName bridge"
     Write-Host "bridge: scheduled task '$Task' at logon (port 8198; token: tv-remote serve --token)"
     $action = New-ScheduledTaskAction -Execute $PythonW -Argument "-I ""$Main"" serve" -WorkingDirectory $AppDir
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
@@ -117,7 +117,9 @@ if ($Bridge) {
 # the local network only.
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)
-$ports = if ($Bridge) { '8198,8199' } else { '8199' }
+# The bridge's port stays open while its task is installed, also when this runs again without -Bridge.
+$hasBridge = $Bridge -or [bool](Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue)
+$ports = if ($hasBridge) { '8198,8199' } else { '8199' }
 $rules = @(
     "New-NetFirewallRule -DisplayName '$AppName (TCP)' -Direction Inbound -Protocol TCP -LocalPort $ports -RemoteAddress LocalSubnet -Profile Private -Action Allow",
     "New-NetFirewallRule -DisplayName '$AppName (UDP)' -Direction Inbound -Protocol UDP -LocalPort 8199 -RemoteAddress LocalSubnet -Profile Private -Action Allow"

@@ -20,7 +20,7 @@ only your Windows account can open):
 
 | File | What's in it |
 |---|---|
-| `~/.config/tv-remote/config.json` | Your TV's network address and MAC address, the name the app pairs as, the **pairing token** the TV issued, your app-button choices and the list of apps found on the TV, and, if you use the ESP32 bridge, its **bridge token** and the addresses allowed to use it. If you pair an Apple TV, also its name, identifier and last network address, the **pairing credentials** for its Companion and AirPlay protocols, and its app list and your app buttons. |
+| `~/.config/tv-remote/config.json` | Your TV's network address and MAC address, the name the app pairs as, the **pairing token** the TV issued and the fingerprint of the TV's certificate it was issued over, your app-button choices and the list of apps found on the TV, and, if you use the ESP32 bridge, its **bridge token** and the addresses allowed to use it. If you pair an Apple TV, also its name, identifier and last network address, the **pairing credentials** for its Companion and AirPlay protocols, and its app list and your app buttons. |
 | `~/.config/tv-remote/mirror-audio.json` | The apps and sound roles that should stay on your own speakers or headset while mirroring (e.g. Discord, Zoom). |
 | `~/.local/state/tv-mirror-audio.json` | Which sound output to switch back to when mirroring stops. |
 | `%APPDATA%\tv-remote\instance.key` (Windows only) | A random key that lets a second launch of the remote bring the open window forward, and keeps other users' programs from doing so. |
@@ -34,7 +34,8 @@ TV's own device-connection settings.
 Everything stays on your local network, between your computer and your TV:
 
 - **Remote keys, text and pairing:** sent to the TV over an encrypted WebSocket (port 8002).
-  The pairing token is sent to the TV each time you connect.
+  The pairing token is sent to the TV each time you connect, and only to the TV whose certificate it was
+  paired with.
 - **Apps and power state:** the app asks the TV over HTTP (port 8001) which apps it has, and
   opens them.
 - **Turning the TV on:** a Wake-on-LAN packet is broadcast on your local network.
