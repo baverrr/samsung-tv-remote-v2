@@ -243,7 +243,8 @@ on UDP 8199. A network remote reaches the [ESP32 bridge](#esp32-bridge) on port 
 <summary><code>install.sh</code> (Linux)</summary>
 
 - creates `venv/` in the checkout (it also sees your distribution's PySide6) and installs
-  `websocket-client` and `pyatv`, with the AirPlay fix in `tools/pyatv-airplay.patch` applied (it needs
+  `websocket-client` and `pyatv` at the versions in `requirements.lock`, with the AirPlay fix in
+  `tools/pyatv-airplay.patch` applied (it needs
   `patch`; without it AirPlay casting stays off and says why);
 - installs the `tv-remote` command to `~/.local/bin`;
 - adds the menu entry, its "Cast Files to TV…" action, the `tvremote://` link handler and the icon;
@@ -258,7 +259,8 @@ Optional extras: `ffmpeg` (more photo formats), `gnome-network-displays` (mirror
 <details>
 <summary><code>install.ps1</code> (Windows)</summary>
 
-- creates `venv\` in the checkout and installs PySide6, `websocket-client` and `pyatv`, with the AirPlay fix
+- creates `venv\` in the checkout and installs PySide6, `websocket-client` and `pyatv` at the versions in
+  `requirements.lock`, with the AirPlay fix
   applied by `tools/patch_pyatv.py` (Windows has no `patch` command);
 - adds the app to the Start menu (it opens without a console window) and registers `tvremote://` links;
 - installs the `tv-remote` command and adds it to your PATH;
@@ -461,6 +463,7 @@ and the bridge work the same whichever TV they drive.
 | `mirror_audio.py` | Sound routing while mirroring on Linux (a user service) |
 | `install.sh`, `packaging/` | Linux install, with the menu entry and service templates |
 | `install.ps1`, `tools/patch_pyatv.py`, `tools/make_icon.py` | Windows install, and the helpers it runs |
+| `requirements.in`, `requirements.lock` | What the installers ask for, and every package they install at one tested version (pip constraints; how to regenerate is in the lock's header) |
 | `tools/pyatv-airplay.patch` | pyatv's unreleased AirPlay fix for tvOS 26+ |
 | `tools/build-gnd.sh`, `tools/gnd-window-resize.patch` | The patched GNOME Network Displays build |
 | `tools/screenshots.py` | Re-renders the screenshots in `docs/` |

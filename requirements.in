@@ -1,0 +1,7 @@
+# What the installers ask for; requirements.lock pins these and everything they pull in.
+websocket-client
+pyatv==0.18.0
+srptools==1.0.1
+biplist==1.0.3
+patch-ng==1.18.1
+PySide6-Essentials

@@ -1,0 +1,44 @@
+# Every package the installers and CI install, at one tested version each: pip's constraints (-c), so
+# a new release of something pyatv pulls in can't change an install without a commit here.
+# Regenerate (Python 3.10+, every platform):
+#   uv pip compile --universal --python-version 3.10 --no-header --no-annotate requirements.in -o requirements.lock
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.5
+aiosignal==1.4.0
+annotated-types==0.8.0
+async-timeout==5.0.1 ; python_full_version < '3.11'
+attrs==26.1.0
+biplist==1.0.3
+certifi==2026.10.23
+cffi==2.1.1
+chacha20poly1305-reuseable==0.13.2
+charset-normalizer==3.5.2
+cryptography==50.0.2
+frozenlist==1.8.0
+idna==3.20
+ifaddr==0.2.0
+miniaudio==1.71
+multidict==7.1.0 ; python_full_version < '3.11'
+multidict==7.2.1 ; python_full_version >= '3.11'
+patch-ng==1.18.1
+propcache==0.5.4
+protobuf==7.36.2
+pyatv==0.18.0
+pycparser==3.11 ; python_full_version < '3.11' and implementation_name != 'PyPy'
+pycparser==3.12 ; python_full_version >= '3.11' and implementation_name != 'PyPy'
+pydantic==2.14.3
+pydantic-core==2.50.4
+pyside6-essentials==6.12.0
+requests==2.34.2
+shiboken6==6.12.0
+six==1.17.0
+srptools==1.0.1
+tabulate==0.10.0
+tinytag==2.3.2
+typing-extensions==4.16.0
+typing-inspection==0.4.5
+urllib3==2.8.0
+websocket-client==1.9.2
+yarl==1.25.1
+zeroconf==0.152.1 ; python_full_version < '3.11'
+zeroconf==0.153.0 ; python_full_version >= '3.11'
