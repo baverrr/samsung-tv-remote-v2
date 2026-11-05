@@ -40,7 +40,7 @@ index 21876e6..cba2e7d 100644
    sinkfilter = gst_element_factory_make ("capsfilter", "cc-sinkfilter");
    success &= gst_bin_add (bin, sinkfilter);
 diff --git a/src/nd-pulseaudio.c b/src/nd-pulseaudio.c
-index a258a8f..93c8f27 100644
+index a258a8f..cf9e6e0 100644
 --- a/src/nd-pulseaudio.c
 +++ b/src/nd-pulseaudio.c
 @@ -264,16 +264,20 @@ nd_pulseaudio_state_cb (pa_context *context,
@@ -74,6 +74,28 @@ index a258a8f..93c8f27 100644
  
      case PA_CONTEXT_FAILED:
      case PA_CONTEXT_TERMINATED:
+@@ -308,6 +312,9 @@ nd_pulseaudio_async_initable_init_async (GAsyncInitable     *initable,
+ 
+   self->mainloop = pa_threaded_mainloop_new ();
+   pa_threaded_mainloop_start (self->mainloop);
++  /* The loop thread is already running: hold its lock while the context is set up and connected,
++   * or it can dispatch the half-made connection and libpulse aborts on a failed assertion. */
++  pa_threaded_mainloop_lock (self->mainloop);
+   self->mainloop_api = pa_threaded_mainloop_get_api (self->mainloop);
+ 
+   proplist = pa_proplist_new ();
+@@ -339,9 +346,11 @@ nd_pulseaudio_async_initable_init_async (GAsyncInitable     *initable,
+                                    pa_strerror (pa_context_errno (self->context)));
+         }
+       g_clear_object (&self->init_task);
++      pa_threaded_mainloop_unlock (self->mainloop);
+       return;
+     }
+ 
++  pa_threaded_mainloop_unlock (self->mainloop);
+   /* Wait for us to be connected. */
+ }
+ 
 diff --git a/src/stream/nd-stream.c b/src/stream/nd-stream.c
 index 709c286..afd0fcf 100644
 --- a/src/stream/nd-stream.c
