@@ -22,7 +22,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from PySide6.QtCore import (
     QByteArray,
@@ -2221,27 +2221,48 @@ def instance_key():
     """Windows: the secret both ends of the instance pipe prove they hold. It lives in the user's own
     %APPDATA%, so only this user's programs can read it, and so talk to (or pose as) the remote."""
     path = core.config_dir() / "instance.key"
+    damaged = False
     try:
         key = path.read_bytes()
         if len(key) >= 32:
             return key
+        damaged = True
     except OSError:
         pass
     # Written whole to a file of our own, then put in place in one step. Linking never overwrites, so of two
-    # first launches at once one key wins, and both read that one; a short (damaged) key is replaced.
+    # first launches at once one key wins, and both read that one. A short (damaged) key is replaced, but
+    # only while it's still short: another launch may have replaced it already and be using its key.
     path.parent.mkdir(parents=True, exist_ok=True)
+    key = secrets.token_bytes(32)
     tmp = path.with_name(f"instance.key.{os.getpid()}.tmp")
-    tmp.write_bytes(secrets.token_bytes(32))
+    tmp.write_bytes(key)
     try:
-        if path.exists():
-            os.replace(tmp, path)
+        if damaged:
+            if len(_read_or_empty(path)) < 32:
+                os.replace(tmp, path)
         else:
-            os.link(tmp, path)
-    except FileExistsError:
-        pass
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                pass
+            except OSError:  # no hard links here (FAT, a redirected AppData on a share): create it exclusively
+                try:
+                    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+                except FileExistsError:
+                    pass
+                else:
+                    with os.fdopen(fd, "wb") as f:
+                        f.write(key)
     finally:
         tmp.unlink(missing_ok=True)
     return path.read_bytes()
+
+
+def _read_or_empty(path):
+    try:
+        return path.read_bytes()
+    except OSError:
+        return b""
 
 
 class SocketInstance:
@@ -2270,6 +2291,26 @@ class SocketInstance:
         with contextlib.suppress(OSError):
             self.listener.shutdown(socket.SHUT_RDWR)
         self.listener.close()
+
+
+PIPE_HANDSHAKE_S = 2  # how long a caller has for each step of the key check
+
+
+class _TimedConnection:
+    """A multiprocessing Connection whose reads give up after a time limit (TimeoutError), for the key
+    check: deliver_challenge() and answer_challenge() would otherwise wait forever on a caller that stalls."""
+
+    def __init__(self, conn, timeout):
+        self.conn = conn
+        self.timeout = timeout
+
+    def send_bytes(self, data):
+        self.conn.send_bytes(data)
+
+    def recv_bytes(self, maxlength=None):
+        if not self.conn.poll(self.timeout):
+            raise TimeoutError("the caller didn't answer the key check in time")
+        return self.conn.recv_bytes(maxlength)
 
 
 class PipeInstance:
@@ -2303,9 +2344,10 @@ class PipeInstance:
         from multiprocessing.connection import answer_challenge, deliver_challenge
 
         with conn:
+            timed: Any = _TimedConnection(conn, PIPE_HANDSHAKE_S)  # the two methods the challenges use
             try:
-                deliver_challenge(conn, self.key)  # as Listener(authkey=...) would: our challenge, then theirs
-                answer_challenge(conn, self.key)
+                deliver_challenge(timed, self.key)  # as Listener(authkey=...) would: our challenge, then theirs
+                answer_challenge(timed, self.key)
             except (OSError, EOFError, AuthenticationError):
                 return  # a caller without the key, or one that went away
             try:

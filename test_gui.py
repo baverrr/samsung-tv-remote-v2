@@ -28,6 +28,7 @@ from PySide6.QtWidgets import QApplication, QFrame, QToolButton
 import appletv
 import remote_qt as rq
 import tv_remote as core
+from conftest import TEST_FINGERPRINT, FakeTLS
 
 KEYS = [(Qt.Key.Key_Up, "KEY_UP"), (Qt.Key.Key_Down, "KEY_DOWN"), (Qt.Key.Key_Left, "KEY_LEFT"),
         (Qt.Key.Key_Right, "KEY_RIGHT"), (Qt.Key.Key_Return, "KEY_ENTER"), (Qt.Key.Key_Escape, "KEY_RETURN"),
@@ -1022,7 +1023,8 @@ def no_reader(monkeypatch):
     ("test", "rotated", "rotated"),
 ])
 def test_connect_saves_the_pairing_token(monkeypatch, config, no_reader, saved, offered, stored):
-    config.write_text(json.dumps({"host": HOST, "mac": MAC, "token": saved, "apps": APPS}))
+    pin = {"cert_sha256": TEST_FINGERPRINT} if saved else {}
+    config.write_text(json.dumps({"host": HOST, "mac": MAC, "token": saved, "apps": APPS, **pin}))
     events, urls = [], []
     ws = FakeWS([{"event": "ms.channel.connect", "data": {"token": offered}}])
     monkeypatch.setattr(core.websocket, "create_connection", lambda url, **kw: urls.append(url) or ws)
@@ -1034,6 +1036,45 @@ def test_connect_saves_the_pairing_token(monkeypatch, config, no_reader, saved, 
     assert events == (["pairing"] if not saved else []) + ["connected"]
     if saved == offered:
         assert config.stat().st_mtime_ns == mtime  # not rewritten
+
+
+@pytest.mark.parametrize(("pinned", "sends_token", "saved_pin"), [
+    (None, True, TEST_FINGERPRINT),  # paired before pinning: the token goes, and this certificate is pinned
+    (TEST_FINGERPRINT, True, TEST_FINGERPRINT),  # the TV it paired with
+    ("f" * 64, False, TEST_FINGERPRINT),  # another certificate: no token, pair afresh, then pin the new one
+])
+def test_the_token_goes_only_to_the_pinned_certificate(monkeypatch, config, no_reader, pinned, sends_token,
+                                                       saved_pin):
+    pin = {"cert_sha256": pinned} if pinned else {}
+    config.write_text(json.dumps({"host": HOST, "mac": MAC, "token": "test", "apps": APPS, **pin}))
+    offered = "test" if sends_token else "fresh"
+    events, urls = [], []
+    ws = FakeWS([{"event": "ms.channel.connect", "data": {"token": offered}}])
+    monkeypatch.setattr(core.websocket, "create_connection", lambda url, **kw: urls.append(url) or ws)
+    tv = core.TV(core.load_config(), lambda e, d: events.append(e))
+    tv.connect()
+    assert ("&token=test" in urls[0]) == sends_token
+    assert ("pairing" in events) == (not sends_token)
+    saved = json.loads(config.read_text())
+    assert saved["cert_sha256"] == saved_pin and saved["token"] == offered
+
+
+def test_a_failed_handshake_closes_the_tls_socket(monkeypatch, no_reader):
+    sockets = []
+
+    def open_tls(self):
+        sockets.append(FakeTLS())
+        return sockets[-1], TEST_FINGERPRINT
+
+    def refuse(url, **kw):
+        raise OSError("handshake failed")
+
+    monkeypatch.setattr(core.TV, "_open_tls", open_tls)
+    monkeypatch.setattr(core.websocket, "create_connection", refuse)
+    monkeypatch.setattr(core.TV, "locate", lambda self: None)
+    with pytest.raises(OSError):
+        core.TV(core.load_config()).connect()
+    assert sockets and all(s.closed for s in sockets)
 
 
 def test_connect_reports_a_refusal_and_keeps_no_socket(monkeypatch, no_reader):
@@ -2261,3 +2302,66 @@ def test_airplay_cast_window_has_no_photos(qtbot, apple):
     assert win is not None
     assert win.windowTitle() == "AirPlay Cast" and not win.photos_btn.isEnabled() and win.auto.isHidden()
     win.close()
+
+
+def test_launch_looks_on_a_tv_never_scanned(monkeypatch, config):
+    config.write_text(json.dumps({"host": HOST, "mac": MAC, "token": "test", "apps": []}))
+    monkeypatch.setattr(core.TV, "scan_apps", lambda self: self.cfg.__setitem__("apps", APPS) or APPS)
+    tv = core.TV(core.load_config())
+    assert core.find_launchable(tv, "netflix") == APPS[0]  # not "isn't installed" before ever asking
+
+
+@pytest.fixture
+def key_dir(monkeypatch, tmp_path):
+    path = tmp_path / "keys"
+    monkeypatch.setattr(core, "config_dir", lambda: path)
+    return path
+
+
+def test_the_instance_key_is_made_once(key_dir):
+    key = rq.instance_key()
+    assert len(key) == 32 and rq.instance_key() == key and (key_dir / "instance.key").read_bytes() == key
+    assert [p.name for p in key_dir.iterdir()] == ["instance.key"]  # no temporary file left
+
+
+def test_a_key_another_launch_made_meanwhile_is_kept(key_dir, monkeypatch):
+    theirs = b"t" * 32
+
+    def token_bytes(n):  # the other first launch puts its key in place while this one makes its own
+        key_dir.mkdir(exist_ok=True)
+        (key_dir / "instance.key").write_bytes(theirs)
+        return b"o" * n
+    monkeypatch.setattr(rq.secrets, "token_bytes", token_bytes)
+    assert rq.instance_key() == theirs  # what the running remote checks callers against
+
+
+@pytest.mark.parametrize("fixed_meanwhile", [False, True])
+def test_a_damaged_key_is_replaced_once(key_dir, monkeypatch, fixed_meanwhile):
+    key_dir.mkdir()
+    (key_dir / "instance.key").write_bytes(b"short")
+    theirs = b"t" * 32
+    if fixed_meanwhile:
+        def token_bytes(n):
+            (key_dir / "instance.key").write_bytes(theirs)
+            return b"o" * n
+        monkeypatch.setattr(rq.secrets, "token_bytes", token_bytes)
+    key = rq.instance_key()
+    assert len(key) == 32 and (key_dir / "instance.key").read_bytes() == key
+    assert (key == theirs) == fixed_meanwhile
+
+
+def test_the_key_is_made_where_hard_links_arent_possible(key_dir, monkeypatch):
+    def link(src, dst):
+        raise OSError(1, "Operation not permitted")
+    monkeypatch.setattr(rq.os, "link", link)
+    key = rq.instance_key()
+    assert len(key) == 32 and (key_dir / "instance.key").read_bytes() == key
+
+
+def test_the_pipe_key_check_gives_up_on_a_caller_that_stalls():
+    from multiprocessing import Pipe
+    from multiprocessing.connection import deliver_challenge
+
+    ours, theirs = Pipe()
+    with ours, theirs, pytest.raises(TimeoutError):
+        deliver_challenge(rq._TimedConnection(ours, 0.1), b"k" * 32)  # pyright: ignore[reportArgumentType]

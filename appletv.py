@@ -352,6 +352,7 @@ class AppleTV:
         if which is not None and which is not self.atv:
             return
         atv, self.atv = self.atv, None
+        self.playing = None  # no more reports come on it: AirPlayRenderer mustn't count on from the last one
         if atv is not None and not self.closing:
             self.on_event("disconnected", None)
 
@@ -371,9 +372,11 @@ class AppleTV:
         return self.loop.run(self._ensure())
 
     def close(self):
-        self.closing = True
-        if self._samsung is not None:
-            self._samsung.close()
+        with self._samsung_lock:  # under the lock, so a volume key on another thread can't make one after this
+            self.closing = True
+            samsung, self._samsung = self._samsung, None
+        if samsung is not None:
+            samsung.close()
         atv, self.atv = self.atv, None
         if atv is not None:
             async def go():
@@ -408,6 +411,8 @@ class AppleTV:
         plainly when it isn't controlling the TV's volume (tvOS takes the key and does nothing then)."""
         if self.volume_via_samsung():
             with self._samsung_lock:
+                if self.closing:
+                    raise ConnectionError("The remote is closing")
                 if self._samsung is None:
                     self._samsung = core.TV(self.root, self._samsung_event)
                 samsung = self._samsung

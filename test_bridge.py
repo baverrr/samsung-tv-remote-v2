@@ -182,11 +182,11 @@ def test_port_in_use_is_one_line(tv):
 
 def raw(server, head):
     with socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=5) as s:
-        s.sendall(head.encode())
+        s.sendall(head.encode("latin-1"))  # as http.server reads headers
         return s.recv(4096).decode()
 
 
-@pytest.mark.parametrize(("length", "status"), [("abc", "400"), ("-1", "400"), ("999999999", "413")])
+@pytest.mark.parametrize(("length", "status"), [("abc", "400"), ("-1", "400"), ("\u00b2", "400"), ("999999999", "413")])
 def test_a_bad_body_length_is_refused_not_trusted(server, tv, length, status):
     reply = raw(server, f"POST /key/volup HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\n"
                         f"Content-Length: {length}\r\n\r\n")
@@ -206,3 +206,9 @@ def test_one_client_written_without_a_list_still_restricts(server, tv):
     assert request(server, "POST", "/key/volup")[0] == 200
     tv.cfg["bridge_clients"] = {"127.0.0.1": True}
     assert request(server, "POST", "/key/volup")[0] == 403
+
+
+def test_a_connection_that_sends_nothing_is_dropped(server, monkeypatch):
+    monkeypatch.setattr(bridge.Handler, "timeout", 0.3)  # 15 s in use
+    with socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=5) as s:
+        assert s.recv(4096) == b""  # closed by the bridge, not held open waiting

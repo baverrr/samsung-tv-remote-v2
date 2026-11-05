@@ -64,6 +64,9 @@ class Bridge(ExclusiveHTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"  # keep-alive: ESPHome's client reuses the connection
+    # A connection that sends nothing (or a body slowly) is dropped after this long, so clients on the LAN,
+    # with the token or without, can't hold the bridge's threads open forever.
+    timeout = 15
 
     @property
     def bridge(self) -> Bridge:
@@ -99,7 +102,8 @@ class Handler(BaseHTTPRequestHandler):
         """Nothing takes a body, but one that's sent must be read, or keep-alive would take it for the next
         request. A length that isn't a number, or is huge, ends the connection instead of being trusted."""
         length = self.headers.get("Content-Length") or "0"
-        if not length.isdigit():  # also refuses a negative length, which would read until the client hangs up
+        if not (length.isascii() and length.isdigit()):  # also refuses a negative length (it would read until
+            # the client hangs up) and digits int() won't take, such as a superscript
             self.close_connection = True
             raise HTTPError(400, "Bad Content-Length")
         if int(length) > MAX_BODY:

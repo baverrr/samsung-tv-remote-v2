@@ -12,6 +12,8 @@ CLI:  tv-remote [--device samsung|appletv] COMMAND   (default: the device used l
 """
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -408,17 +410,41 @@ class TV:
                 raise
             return self._connect()
 
+    def _open_tls(self):
+        """A TLS connection to the TV's port 8002, and the SHA-256 of the certificate it showed. The TV's
+        certificate is self-signed, so no CA can vouch for it: _connect() pins the one it paired with."""
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE  # checked by fingerprint instead, before the token is sent
+        sock = socket.create_connection((self.host, 8002), timeout=8)
+        try:
+            tls = ctx.wrap_socket(sock, server_hostname=self.host)
+        except BaseException:
+            sock.close()
+            raise
+        der = tls.getpeercert(binary_form=True) or b""
+        return tls, hashlib.sha256(der).hexdigest()
+
     def _connect(self):
         name = base64.b64encode(self.cfg["name"].encode()).decode()
         url = f"wss://{self.host}:8002/api/v2/channels/samsung.remote.control?name={name}"
-        if self.cfg.get("token"):
+        # Reaching the TV gets 8 s, so a key press for a TV that's gone fails quickly.
+        sock, fingerprint = self._open_tls()
+        pinned = self.cfg.get("cert_sha256")
+        # The token goes only to the TV it came from: one showing another certificate (another TV, a reset,
+        # or something on the network posing as it) is asked to pair afresh, with the "Allow" prompt.
+        sent_token = bool(self.cfg.get("token")) and (not pinned or hmac.compare_digest(pinned, fingerprint))
+        if sent_token:
             url += f"&token={self.cfg['token']}"
         else:
             self.on_event("pairing", None)
-        # The TV uses a self-signed cert. Reaching it gets 8 s, so a key press for a TV that's gone fails
-        # quickly; its first message waits up to 35 s, which covers the on-screen "Allow" prompt (shown
-        # again even with a token if the TV forgot this remote).
-        ws = websocket.create_connection(url, timeout=8, sslopt={"cert_reqs": ssl.CERT_NONE, "check_hostname": False})
+        # The first message waits up to 35 s, which covers the on-screen "Allow" prompt (shown again even
+        # with a token if the TV forgot this remote).
+        try:
+            ws = websocket.create_connection(url, timeout=8, socket=sock)
+        except BaseException:
+            sock.close()
+            raise
         ws.settimeout(35)
         msg = json.loads(ws.recv())
         if msg.get("event") != "ms.channel.connect":
@@ -426,8 +452,9 @@ class TV:
             raise PairingRefused(f"The TV refused this remote ({msg.get('event')}). Accept the prompt on the TV, or "
                                  "allow it under Settings › General › External Device Manager › Device Connection Manager.")
         token = (msg.get("data") or {}).get("token")
-        if token and token != self.cfg.get("token"):
-            self.cfg["token"] = token
+        # A new token is pinned to the certificate it came over; so is a token paired before pinning was.
+        if (token and token != self.cfg.get("token")) or (fingerprint != pinned and (token or sent_token)):
+            self.cfg["token"], self.cfg["cert_sha256"] = token or self.cfg["token"], fingerprint
             try:
                 save_config(self.cfg)
             except OSError as e:  # don't leave this socket open with nothing reading it
@@ -630,9 +657,11 @@ def find_launchable(tv, name):
     """An installed app by key (netflix, id:<appId>, an Apple TV bundle ID) or by the TV's name for it, or
     None. The CLI's launch and the bridge's /launch both look apps up this way."""
     cfg = tv.cfg
+    if not cfg["apps"]:  # never scanned (a fresh config): look first, rather than say it isn't installed
+        tv.scan_apps()  # saves what it finds in cfg["apps"]
     if tv.kind == "samsung" and (name in CATALOG_BY_KEY or name.startswith(CUSTOM)):
         return installed_app(cfg, name)
-    return installed_app(cfg, name) or find_app(cfg["apps"] or tv.scan_apps(), name)
+    return installed_app(cfg, name) or find_app(cfg["apps"], name)
 
 
 MIRROR_HINT = ("Pick the TV in Windows' Cast panel, then Allow on the TV" if WINDOWS else

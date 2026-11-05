@@ -1067,3 +1067,26 @@ def test_bridge_power_key_sleeps_the_box_in_the_background(server, monkeypatch):
     monkeypatch.setattr(server.tv, "turn_off", lambda: slept.set() or True)
     assert request(server, "POST", "/key/power") == (202, {"ok": True})  # answers at once, like /power/off
     assert slept.wait(3) and server.tv.calls == []
+
+
+def test_no_samsung_client_is_made_once_the_remote_closes(client, monkeypatch):
+    monkeypatch.setattr(core.TV, "key", lambda self, k: None)
+    client.cfg["volume_via_samsung"] = True
+    client.key("KEY_VOLUP")
+    made = client._samsung
+    assert made is not None
+    closed = []
+    monkeypatch.setattr(made, "close", lambda: closed.append(True))
+    client.close()
+    assert closed and client._samsung is None
+    with pytest.raises(ConnectionError):  # a key that was on its way: no new websocket left open
+        client.key("KEY_VOLUP")
+    assert client._samsung is None
+
+
+def test_a_lost_connection_forgets_what_was_playing(client):
+    client.atv = object()
+    client.playing, client.playing_at = {"state": "playing", "position": 10, "total": 100}, time.monotonic() - 50
+    client._lost(client.atv)
+    assert client.playing is None
+    assert appletv.AirPlayRenderer(client).position() == (0, 0)  # not 60 s on from a report that's stale
