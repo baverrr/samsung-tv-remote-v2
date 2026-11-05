@@ -10,3 +10,6 @@ gate-result*.json
 *.bak-tk
 # Made by install.ps1 from tv-remote.svg
 tv-remote.ico
+# Local tool state (Claude Code, Serena)
+.claude/
+.serena/

@@ -416,6 +416,7 @@ class TV:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE  # checked by fingerprint instead, before the token is sent
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2  # Python's default already, but said outright
         sock = socket.create_connection((self.host, 8002), timeout=8)
         try:
             tls = ctx.wrap_socket(sock, server_hostname=self.host)
