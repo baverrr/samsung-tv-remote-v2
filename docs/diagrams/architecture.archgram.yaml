@@ -1,0 +1,90 @@
+archgram: 1
+title: Samsung & Apple TV Remote
+description: >-
+  The remote window, the command line and the ESP32 bridge all get their TV
+  client from make_client, which hands back the Samsung client or the Apple
+  TV client; both offer the same methods, so every entry point works with
+  either TV. The Samsung client talks to the TV over WebSocket, REST and
+  DLNA and wakes it with Wake-on-LAN; the Apple TV client goes through
+  pyatv. To cast, the window or command line starts a small file server on the PC, and the TV fetches the file from it.
+  An ESP32 touch screen drives the bridge over HTTP.
+direction: down
+frames:
+  - { id: pc, label: Your PC }
+nodes:
+  - id: esp32
+    kind: mobile
+    label: ESP32 touch screen
+    note: or any HTTP client
+    variant: external
+  - id: window
+    kind: desktop
+    label: Remote window
+    note: remote_qt.py
+    tech: qt
+    frame: pc
+    source: ../../remote_qt.py
+  - id: cli
+    kind: script
+    label: Command line
+    note: tv_remote.py
+    frame: pc
+    source: ../../tv_remote.py
+  - id: bridge
+    kind: service
+    label: ESP32 bridge
+    note: tv-remote serve · :8198
+    frame: pc
+    source: ../../bridge.py
+  - id: client
+    kind: service
+    label: make_client
+    note: same methods for both TVs
+    frame: pc
+    source: '../../tv_remote.py#def make_client(cfg, device'
+  - id: samsung
+    kind: service
+    label: Samsung client
+    note: tv_remote.TV
+    frame: pc
+    source: '../../tv_remote.py#class TV:'
+  - id: apple
+    kind: service
+    label: Apple TV client
+    note: appletv.AppleTV · pyatv
+    frame: pc
+    source: ../../appletv.py
+  - id: cast
+    kind: service
+    label: Cast server
+    note: cast.py · :8199
+    frame: pc
+    source: ../../cast.py
+  - id: stv
+    kind: service
+    label: Samsung TV
+    note: Tizen
+    variant: external
+  - id: atv
+    kind: service
+    label: Apple TV
+    note: tvOS
+    tech: apple
+    variant: external
+edges:
+  - { from: esp32, to: bridge, label: HTTP, source: '../../bridge.py#def do_POST(self):' }
+  - { from: window, to: client, source: '../../remote_qt.py#core.make_client(cfg, self.device, self.post)' }
+  - { from: cli, to: client, source: '../../tv_remote.py#tv = make_client(cfg, pick_device(cfg, wanted)' }
+  - { from: bridge, to: client, source: '../../bridge.py#tv = self.bridge.tv' }
+  - { from: client, to: samsung, label: samsung, source: '../../tv_remote.py#return TV(cfg, on_event)' }
+  - { from: client, to: apple, label: appletv, source: '../../tv_remote.py#return appletv.AppleTV(cfg, on_event)' }
+  - { from: samsung, to: stv, label: WebSocket · REST · DLNA, source: '../../tv_remote.py#url = f"wss://{self.host}:8002' }
+  - { from: apple, to: atv, label: Companion · AirPlay, source: '../../appletv.py#atv = await pyatv.connect(conf' }
+  - { from: window, to: cast, label: cast, source: '../../remote_qt.py#self.caster = cast.Caster(self.tv.host' }
+  - { from: cli, to: cast, label: cast, source: '../../tv_remote.py#caster = cast.Caster(tv.host, on_status, renderer=tv.renderer())' }
+  - { from: cast, to: stv, label: file, style: dashed, source: '../../cast.py#self.httpd = ExclusiveHTTPServer((self.ip, PORT), Handler)' }
+  - { from: cast, to: atv, label: file, style: dashed, source: '../../cast.py#self.httpd = ExclusiveHTTPServer((self.ip, PORT), Handler)' }
+flows:
+  - { name: a key from the window, steps: [window, client, samsung, stv] }
+  - { name: a tap on the ESP32, steps: [esp32, bridge, client, apple, atv] }
+  - { name: casting a video, steps: [window, cast, [stv, atv]] }

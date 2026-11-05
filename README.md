@@ -411,20 +411,14 @@ TVs that ignore Wake-on-LAN.
 
 ## How it works
 
-```mermaid
-flowchart LR
-    W[Remote window / CLI / ESP32 bridge] --> C{device in use}
-    C -->|samsung| S[tv_remote.TV]
-    C -->|appletv| A[appletv.AppleTV]
-    S -->|WebSocket 8002, REST 8001, WoL| TV[Samsung TV]
-    S -->|DLNA 9197| TV
-    A -->|pyatv: Companion| ATV[Apple TV]
-    A -->|pyatv: AirPlay + MRP| ATV
-    TV & ATV -.->|fetch the cast file| F[cast server :8199]
-```
+<p align="center">
+  <img src="docs/diagrams/architecture.svg" alt="How it works: the remote window, the command line and the ESP32 bridge (which an ESP32 touch screen reaches over HTTP) all get their TV client from make_client, which returns the Samsung client or the Apple TV client. The Samsung client talks to the Samsung TV over WebSocket, REST and DLNA; the Apple TV client talks to the Apple TV through pyatv (Companion and AirPlay). To cast, the window or command line starts the cast server on port 8199, and the TV fetches the file from it." width="700">
+</p>
 
 Both TV clients offer the same methods (keys, text, apps, power, casting), so the window, the command line
-and the bridge work the same whichever TV they drive.
+and the bridge work the same whichever TV they drive. The Samsung client also wakes the TV with Wake-on-LAN. The diagram is
+drawn with [archgram](https://github.com/byabas/archgram) from
+[`docs/diagrams/architecture.archgram.yaml`](docs/diagrams/architecture.archgram.yaml), in the remote window's colours.
 
 <details>
 <summary>The protocols, in detail</summary>
@@ -470,6 +464,7 @@ and the bridge work the same whichever TV they drive.
 | `test_*.py` | Tests (TVs, PipeWire and the Windows APIs are faked; nothing touches the network) |
 | `conftest.py` | Shared test setup: no test opens a TLS connection to a TV |
 | `docs/`, `icons/`, `tv-remote.svg` | Screenshots and diagrams, Lucide icons, the app icon |
+| `docs/diagrams/`, `archgram.theme.json` | The README's architecture diagram: its archgram spec, the SVG drawn from it, and its colours |
 | `.gitattributes` | Keeps the patch and shell scripts at LF line endings on Windows checkouts |
 
 ## Development

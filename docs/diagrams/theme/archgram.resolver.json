@@ -1,0 +1,89 @@
+{
+  "version": "2025.10",
+  "modifiers": {
+    "theme": {
+      "contexts": {
+        "light": [
+          {
+            "color": {
+              "$type": "color",
+              "canvas": {
+                "$value": "#0e1014"
+              },
+              "card": {
+                "$value": "#181b21"
+              },
+              "badge": {
+                "$value": "#262b34"
+              },
+              "border": {
+                "$value": "#373d49"
+              },
+              "line": {
+                "$value": "#a3abba"
+              },
+              "text": {
+                "$value": "#f1f3f7"
+              },
+              "muted": {
+                "$value": "#a3abba"
+              },
+              "accent": {
+                "$value": "#5b93ff"
+              },
+              "ok": {
+                "$value": "#3dd68c"
+              },
+              "danger": {
+                "$value": "#e5484d"
+              }
+            }
+          }
+        ],
+        "dark": [
+          {
+            "color": {
+              "$type": "color",
+              "canvas": {
+                "$value": "#0e1014"
+              },
+              "card": {
+                "$value": "#181b21"
+              },
+              "badge": {
+                "$value": "#262b34"
+              },
+              "border": {
+                "$value": "#373d49"
+              },
+              "line": {
+                "$value": "#a3abba"
+              },
+              "text": {
+                "$value": "#f1f3f7"
+              },
+              "muted": {
+                "$value": "#a3abba"
+              },
+              "accent": {
+                "$value": "#5b93ff"
+              },
+              "ok": {
+                "$value": "#3dd68c"
+              },
+              "danger": {
+                "$value": "#e5484d"
+              }
+            }
+          }
+        ]
+      },
+      "default": "dark"
+    }
+  },
+  "resolutionOrder": [
+    {
+      "$ref": "#/modifiers/theme"
+    }
+  ]
+}
