@@ -46,7 +46,8 @@ echo "venv: $APP_DIR/venv"
 [ -x "$APP_DIR/venv/bin/python" ] || python3 -m venv --system-site-packages "$APP_DIR/venv"
 # pyatv: the Apple TV remote (Companion, AirPlay and MRP protocols). srptools 2 made an argument pyatv
 # 0.18 passes keyword-only, which breaks pairing, so it stays on 1.x. biplist: the AirPlay patch below.
-"$APP_DIR/venv/bin/pip" install --quiet websocket-client "pyatv==0.18.0" "srptools==1.0.1" "biplist==1.0.3"
+"$APP_DIR/venv/bin/pip" install --quiet -c "$APP_DIR/requirements.lock" websocket-client "pyatv==0.18.0" \
+    "srptools==1.0.1" "biplist==1.0.3"
 # AirPlay casting to tvOS 26+ needs an unreleased pyatv fix (see the patch's header). Applied once:
 # a reverse dry run that succeeds means it's already in.
 SITE=$("$APP_DIR/venv/bin/python" -c "import os, pyatv; print(os.path.dirname(os.path.dirname(pyatv.__file__)))")

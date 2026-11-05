@@ -45,7 +45,8 @@ if (-not (Test-Path $Python)) {
 }
 # PySide6 (the window), pyatv (the Apple TV remote). srptools 2 made an argument pyatv 0.18 passes
 # keyword-only, which breaks pairing, so it stays on 1.x. biplist and patch-ng: the AirPlay patch below.
-& $Python -m pip install --quiet --disable-pip-version-check PySide6-Essentials websocket-client `
+& $Python -m pip install --quiet --disable-pip-version-check -c (Join-Path $AppDir 'requirements.lock') `
+    PySide6-Essentials websocket-client `
     'pyatv==0.18.0' 'srptools==1.0.1' 'biplist==1.0.3' 'patch-ng==1.18.1'
 if ($LASTEXITCODE) { throw 'Installing the Python packages failed' }
 # AirPlay casting to tvOS 26+ needs an unreleased pyatv fix (see the patch's header). Applied once, all or
