@@ -1,4 +1,4 @@
-"""Re-render docs/remote.png, docs/cast.png, docs/apps.png and docs/remote-appletv.png offscreen, with the
+"""Re-render docs/images/remote.png, cast.png, apps.png and remote-appletv.png offscreen, with the
 TV and the Apple TV stubbed out (nothing is sent).
 
 Run with the app's venv:  venv/bin/python -I tools/screenshots.py
@@ -56,8 +56,8 @@ def main():
     app.setStyleSheet(rq.stylesheet())
     window = rq.RemoteWindow(core.load_config())
     window.show()
-    docs = APP / "docs"
-    docs.mkdir(exist_ok=True)
+    docs = APP / "docs" / "images"
+    docs.mkdir(parents=True, exist_ok=True)
 
     def shoot():
         # The body, not the window: the offscreen screen is short, so the window would be clipped.
